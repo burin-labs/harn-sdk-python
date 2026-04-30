@@ -51,7 +51,9 @@ class OAuthDeviceFlowCredential(CredentialProvider):
         response.raise_for_status()
         return response.json()
 
-    def poll(self, device_code: str, interval: int = 5, timeout_seconds: int = 300) -> str:
+    def poll(
+        self, device_code: str, interval: int = 5, timeout_seconds: int = 300
+    ) -> str:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             response = self._http_client.post(

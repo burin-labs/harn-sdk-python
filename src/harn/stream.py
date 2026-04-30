@@ -14,7 +14,11 @@ class SSEParser:
         self.data_parts: list[str] = []
 
     def _flush(self) -> StreamEvent | None:
-        if self.current_id is None and self.current_event is None and not self.data_parts:
+        if (
+            self.current_id is None
+            and self.current_event is None
+            and not self.data_parts
+        ):
             return None
         raw_data = "\n".join(self.data_parts) if self.data_parts else None
         parsed_data: object = raw_data
