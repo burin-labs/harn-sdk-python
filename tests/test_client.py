@@ -9,7 +9,10 @@ def test_client_adds_auth_header() -> None:
         return httpx.Response(200, json={"ok": True})
 
     transport = httpx.MockTransport(handler)
-    with HarnClient(client=httpx.Client(transport=transport, base_url="https://api.harnlang.com"), token="token-123") as client:
+    with HarnClient(
+        client=httpx.Client(transport=transport, base_url="https://api.harnlang.com"),
+        token="token-123",
+    ) as client:
         response = client.get_protocol_discovery()
     assert response == {"ok": True}
 
@@ -22,6 +25,8 @@ def test_client_path_params() -> None:
         return httpx.Response(200, json={"ok": True})
 
     transport = httpx.MockTransport(handler)
-    with HarnClient(client=httpx.Client(transport=transport, base_url="https://api.harnlang.com")) as client:
+    with HarnClient(
+        client=httpx.Client(transport=transport, base_url="https://api.harnlang.com")
+    ) as client:
         client.get_session("sess_1")
     assert seen["path"] == "/v1/sessions/sess_1"
