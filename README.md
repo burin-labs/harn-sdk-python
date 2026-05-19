@@ -14,17 +14,62 @@ pip install harn-sdk
 from harn import HarnClient
 
 with HarnClient(base_url="http://localhost:8080", token="...") as client:
-    discovery = client.get_protocol_discovery()
-    print(discovery)
+    session = client.create_session(body={"workspace_id": "wrk_123"})
+    task = client.submit_session_task(
+        session["id"],
+        body={"input": {"role": "user", "parts": [{"type": "text", "text": "Ship it."}]}},
+        idempotency_key="task-001",
+    )
+
+    for event in client.stream_task_events(task["id"]):
+        print(event.event, event.data)
 ```
 
 ## Authentication
 
-The SDK supports:
-- direct bearer token (`token="..."`)
-- API key credential (`APIKeyCredential`)
-- ambient credentials (`HARN_API_KEY`)
-- OAuth2 device flow (`OAuthDeviceFlowCredential`)
+The client sends `Authorization: Bearer ...` when a token is available. Lookup
+order is explicit `token`, then `credential`, then `HARN_API_KEY`.
+
+```python
+from harn import HarnClient
+
+client = HarnClient(token="harn_live_...")
+```
+
+For OAuth device flow, call OIDC discovery when the issuer advertises custom
+device and token endpoints:
+
+```python
+from harn import OAuthDeviceFlowCredential
+
+credential = OAuthDeviceFlowCredential(
+    "https://issuer.example",
+    client_id="client-id",
+    scope="tasks:create tasks:read",
+)
+credential.discover()
+authorization = credential.start()
+print(authorization["verification_uri"], authorization["user_code"])
+credential.poll(authorization["device_code"])
+```
+
+`HARN_PROTOCOL_VERSION` is exported for callers that need to coordinate raw
+requests with Harn Cloud. SDK v1 requests send
+`Harn-Agents-Protocol-Version: agents-protocol-2026-04-25`; public discovery
+helpers omit that header.
+
+## Harn Cloud Surface
+
+The client includes wrappers for the core v1 resources plus newer Cloud
+surfaces used by current Harn releases:
+
+- session and task suspend/resume
+- lifecycle, pipeline, channel, and tool-call receipt audit reads
+- context-pack creation, version approval/revocation, artifact review, and mount resolution
+- persona cards, manifests, and schedule controls
+
+Use `client.request(method, path, ...)` or `await client.request(...)` for
+Cloud endpoints that do not have a named helper yet.
 
 ## Streaming
 
@@ -55,7 +100,8 @@ print([t.name for t in registry.list()])
 - `HarnClient`: synchronous API
 - `AsyncHarnClient`: async API
 
-Both clients include wrappers for the full v1 endpoints defined in Harn OpenAPI.
+Both clients share the same response handling: JSON responses return decoded
+objects, `204` returns `None`, and error responses raise `ApiError`.
 
 ## Examples
 

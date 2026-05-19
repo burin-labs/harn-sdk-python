@@ -4,7 +4,10 @@ from harn import HarnClient
 with HarnClient(base_url="http://localhost:8080") as client:
     result = client.submit_task(
         body={
-            "workflow": {"name": "default", "input": {"prompt": "Summarize release notes"}},
+            "workflow": {
+                "name": "default",
+                "input": {"prompt": "Summarize release notes"},
+            },
             "mode": "sync",
         }
     )
