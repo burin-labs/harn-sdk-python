@@ -1,6 +1,6 @@
 # harn-sdk-python
 
-Python SDK for the Harn Agents Protocol API.
+Python SDK for the Harn Agents API.
 
 ## Install
 
@@ -27,8 +27,8 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
 
 ## Authentication
 
-The client sends `Authorization: Bearer ...` when a token is available. Lookup
-order is explicit `token`, then `credential`, then `HARN_API_KEY`.
+The client sends `Authorization: Bearer ...` when a token is available. Token
+lookup order is explicit `token`, then `credential`, then `HARN_API_KEY`.
 
 ```python
 from harn import HarnClient
@@ -53,23 +53,23 @@ print(authorization["verification_uri"], authorization["user_code"])
 credential.poll(authorization["device_code"])
 ```
 
-`HARN_PROTOCOL_VERSION` is exported for callers that need to coordinate raw
-requests with Harn Cloud. SDK v1 requests send
+`HARN_PROTOCOL_VERSION` is exported for callers that need to coordinate raw Harn
+API requests. SDK v1 calls send
 `Harn-Agents-Protocol-Version: agents-protocol-2026-04-25`; public discovery
 helpers omit that header.
 
-## Harn Cloud Surface
+## API surface
 
-The client includes wrappers for the core v1 resources plus newer Cloud
-surfaces used by current Harn releases:
+`HarnClient` and `AsyncHarnClient` expose named helpers for the v1 OpenAPI
+routes tracked in `src/harn/client.py`, including:
 
-- session and task suspend/resume
-- lifecycle, pipeline, channel, and tool-call receipt audit reads
-- context-pack creation, version approval/revocation, artifact review, and mount resolution
-- persona cards, manifests, and schedule controls
+- public discovery
+- runtime, capability, tool, and agent-card reads
+- personas, workspaces, workspace files, sessions, messages, tasks, branches, and events
+- permission requests, artifacts, receipts, memories, vaults, connectors, skills, outcomes, and quotas
 
-Use `client.request(method, path, ...)` or `await client.request(...)` for
-Cloud endpoints that do not have a named helper yet.
+Use `client.request(method, path, ...)` or `await client.request(...)` for API
+routes that do not have a named helper yet.
 
 ## Streaming
 
@@ -83,7 +83,7 @@ with HarnClient(base_url="http://localhost:8080") as client:
         print(event.event, event.data)
 ```
 
-## Tool Helper
+## Tool helper
 
 ```python
 from harn import tool, registry
@@ -100,7 +100,7 @@ print([t.name for t in registry.list()])
 - `HarnClient`: synchronous API
 - `AsyncHarnClient`: async API
 
-Both clients include wrappers for the current endpoints defined in Harn OpenAPI.
+Both clients include wrappers for endpoints defined in Harn OpenAPI.
 Public discovery endpoints (`/health`, `/version`, `/openapi.json`, `/v1`, and
 `/v1/agent-card`) do not attach auth or protocol headers. For experimental or
 unwrapped endpoints, use `client.request(...)` or `await client.request(...)`.
@@ -111,11 +111,12 @@ objects, `204` returns `None`, and error responses raise `ApiError`.
 ## Examples
 
 See runnable examples in [`examples/`](examples):
-- invoke a workflow/task
-- observe transcript/event streams
-- fire trigger-like input
-- manage sessions
-- deploy pipeline metadata
+
+- `01_invoke_workflow.py`: submit a workflow-shaped task
+- `02_observe_transcript.py`: read session event streams
+- `03_fire_trigger.py`: record trigger-like input
+- `04_manage_session.py`: create, inspect, and close a session
+- `05_deploy_pipeline.py`: publish pipeline metadata as artifacts and outcomes
 
 ## Development
 
@@ -126,16 +127,16 @@ pip install -e .[dev]
 pytest
 ```
 
-## Release Automation
+## Release automation
 
 ### Workflows
 
 - `CI` (`.github/workflows/ci.yml`)
-  - checks version sync, formatting, lint, tests, build, and package metadata validation.
+  - checks version sync, formatting, lint, tests, build, and package metadata.
 - `Publish` (`.github/workflows/publish.yml`)
   - publishes to PyPI on tags matching `v*` using Trusted Publishing (OIDC).
 - `Release Bump` (`.github/workflows/release-bump.yml`)
-  - manual workflow to bump version, commit to `main`, create tag, push, and create GitHub Release.
+  - bumps the version, commits to `main`, creates a tag, pushes, and creates a GitHub Release.
 
 ### Version management
 
@@ -150,11 +151,11 @@ python scripts/check_version_sync.py
 python scripts/bump_version.py 0.1.0a1
 ```
 
-### PyPI setup (Trusted Publishing)
+### PyPI setup
 
-PyPI does not always expose a standalone "create project" button. The project is created on first successful upload when the package name is available.
+PyPI creates the project on first successful upload when the package name is
+available.
 
-Recommended setup:
 1. On PyPI, create a Trusted Publisher for this repository/workflow (`publish.yml`).
 2. On GitHub, create an environment named `pypi` (optionally require reviewers).
 3. Run the `Release Bump` workflow with a version like `0.1.0a1`.
@@ -163,6 +164,8 @@ Recommended setup:
 If Trusted Publisher requires an existing project first, do a one-time bootstrap upload with a scoped API token, then switch fully to Trusted Publishing.
 
 ### Local fallback release
+
+Use this only when the release workflow is unavailable.
 
 ```bash
 git checkout main && git pull
