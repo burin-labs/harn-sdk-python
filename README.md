@@ -100,6 +100,11 @@ print([t.name for t in registry.list()])
 - `HarnClient`: synchronous API
 - `AsyncHarnClient`: async API
 
+Both clients include wrappers for the current endpoints defined in Harn OpenAPI.
+Public discovery endpoints (`/health`, `/version`, `/openapi.json`, `/v1`, and
+`/v1/agent-card`) do not attach auth or protocol headers. For experimental or
+unwrapped endpoints, use `client.request(...)` or `await client.request(...)`.
+
 Both clients share the same response handling: JSON responses return decoded
 objects, `204` returns `None`, and error responses raise `ApiError`.
 

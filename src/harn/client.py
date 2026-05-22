@@ -1,16 +1,195 @@
 from __future__ import annotations
 
+import re
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
+from inspect import Parameter, Signature
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from .auth import AmbientCredential, CredentialProvider
-from .models import ApiError, ErrorBody, JsonDict
+from .models import ApiError, ErrorBody, JsonDict, StreamEvent
 from .stream import SSEParser, parse_sse_lines
 
 HARN_PROTOCOL_VERSION = "agents-protocol-2026-04-25"
 HARN_PROTOCOL_HEADER = "Harn-Agents-Protocol-Version"
+
+_PATH_PARAM_RE = re.compile(r"{([A-Za-z_][A-Za-z0-9_]*)}")
+
+
+@dataclass(frozen=True)
+class _Endpoint:
+    name: str
+    method: str
+    path: str
+    public: bool = False
+    stream: bool = False
+    accepts_body: bool = False
+
+    @property
+    def path_params(self) -> tuple[str, ...]:
+        return tuple(_PATH_PARAM_RE.findall(self.path))
+
+
+_OPENAPI_ENDPOINTS: tuple[_Endpoint, ...] = (
+    _Endpoint("get_health", "GET", "/health", public=True),
+    _Endpoint("get_version", "GET", "/version", public=True),
+    _Endpoint("get_open_api_document", "GET", "/openapi.json", public=True),
+    _Endpoint("get_protocol_discovery", "GET", "/v1", public=True),
+    _Endpoint("get_runtime", "GET", "/v1/runtime"),
+    _Endpoint("list_capabilities", "GET", "/v1/capabilities"),
+    _Endpoint("list_tools", "GET", "/v1/tools"),
+    _Endpoint("get_tool", "GET", "/v1/tools/{tool_id}"),
+    _Endpoint("get_agent_card", "GET", "/v1/agent-card", public=True),
+    _Endpoint("list_personas", "GET", "/v1/personas"),
+    _Endpoint("create_persona", "POST", "/v1/personas", accepts_body=True),
+    _Endpoint("get_persona", "GET", "/v1/personas/{persona_id}"),
+    _Endpoint(
+        "update_persona",
+        "PATCH",
+        "/v1/personas/{persona_id}",
+        accepts_body=True,
+    ),
+    _Endpoint("list_workspaces", "GET", "/v1/workspaces"),
+    _Endpoint("create_workspace", "POST", "/v1/workspaces", accepts_body=True),
+    _Endpoint("get_workspace", "GET", "/v1/workspaces/{workspace_id}"),
+    _Endpoint(
+        "update_workspace",
+        "PATCH",
+        "/v1/workspaces/{workspace_id}",
+        accepts_body=True,
+    ),
+    _Endpoint("read_workspace_file", "GET", "/v1/workspaces/{workspace_id}/files"),
+    _Endpoint(
+        "write_workspace_file",
+        "PUT",
+        "/v1/workspaces/{workspace_id}/files",
+        accepts_body=True,
+    ),
+    _Endpoint("list_sessions", "GET", "/v1/sessions"),
+    _Endpoint("create_session", "POST", "/v1/sessions", accepts_body=True),
+    _Endpoint("get_session", "GET", "/v1/sessions/{session_id}"),
+    _Endpoint(
+        "update_session",
+        "PATCH",
+        "/v1/sessions/{session_id}",
+        accepts_body=True,
+    ),
+    _Endpoint("close_session", "POST", "/v1/sessions/{session_id}/close"),
+    _Endpoint(
+        "fork_session",
+        "POST",
+        "/v1/sessions/{session_id}/fork",
+        accepts_body=True,
+    ),
+    _Endpoint(
+        "truncate_session",
+        "POST",
+        "/v1/sessions/{session_id}/truncate",
+        accepts_body=True,
+    ),
+    _Endpoint("list_session_messages", "GET", "/v1/sessions/{session_id}/messages"),
+    _Endpoint(
+        "append_session_message",
+        "POST",
+        "/v1/sessions/{session_id}/messages",
+        accepts_body=True,
+    ),
+    _Endpoint("list_session_tasks", "GET", "/v1/sessions/{session_id}/tasks"),
+    _Endpoint(
+        "submit_session_task",
+        "POST",
+        "/v1/sessions/{session_id}/tasks",
+        accepts_body=True,
+    ),
+    _Endpoint("list_session_branches", "GET", "/v1/sessions/{session_id}/branches"),
+    _Endpoint(
+        "create_session_branch",
+        "POST",
+        "/v1/sessions/{session_id}/branches",
+        accepts_body=True,
+    ),
+    _Endpoint("list_session_events", "GET", "/v1/sessions/{session_id}/events"),
+    _Endpoint(
+        "stream_session_events",
+        "GET",
+        "/v1/sessions/{session_id}/events/stream",
+        stream=True,
+    ),
+    _Endpoint("list_tasks", "GET", "/v1/tasks"),
+    _Endpoint("submit_task", "POST", "/v1/tasks", accepts_body=True),
+    _Endpoint("get_task", "GET", "/v1/tasks/{task_id}"),
+    _Endpoint(
+        "cancel_task",
+        "POST",
+        "/v1/tasks/{task_id}/cancel",
+        accepts_body=True,
+    ),
+    _Endpoint("list_permission_requests", "GET", "/v1/permission-requests"),
+    _Endpoint(
+        "list_task_permission_requests",
+        "GET",
+        "/v1/tasks/{task_id}/permission-requests",
+    ),
+    _Endpoint(
+        "respond_permission_request",
+        "POST",
+        "/v1/permission-requests/{request_id}/respond",
+        accepts_body=True,
+    ),
+    _Endpoint(
+        "replay_task",
+        "POST",
+        "/v1/tasks/{task_id}/replay",
+        accepts_body=True,
+    ),
+    _Endpoint(
+        "append_task_message",
+        "POST",
+        "/v1/tasks/{task_id}/messages",
+        accepts_body=True,
+    ),
+    _Endpoint("list_task_events", "GET", "/v1/tasks/{task_id}/events"),
+    _Endpoint("stream_task_events", "GET", "/v1/tasks/{task_id}/stream", stream=True),
+    _Endpoint("list_task_receipts", "GET", "/v1/tasks/{task_id}/receipts"),
+    _Endpoint("get_branch", "GET", "/v1/branches/{branch_id}"),
+    _Endpoint("get_message", "GET", "/v1/messages/{message_id}"),
+    _Endpoint("list_artifacts", "GET", "/v1/artifacts"),
+    _Endpoint("register_artifact", "POST", "/v1/artifacts", accepts_body=True),
+    _Endpoint("get_artifact", "GET", "/v1/artifacts/{artifact_id}"),
+    _Endpoint(
+        "download_artifact_content",
+        "GET",
+        "/v1/artifacts/{artifact_id}/content",
+    ),
+    _Endpoint("list_events", "GET", "/v1/events"),
+    _Endpoint("get_event", "GET", "/v1/events/{event_id}"),
+    _Endpoint("stream_events", "GET", "/v1/events/stream", stream=True),
+    _Endpoint("get_receipt", "GET", "/v1/receipts/{receipt_id}"),
+    _Endpoint(
+        "verify_receipt",
+        "POST",
+        "/v1/receipts/{receipt_id}/verify",
+        accepts_body=True,
+    ),
+    _Endpoint("list_memories", "GET", "/v1/memories"),
+    _Endpoint("create_memory", "POST", "/v1/memories", accepts_body=True),
+    _Endpoint("get_memory", "GET", "/v1/memories/{memory_id}"),
+    _Endpoint("delete_memory", "DELETE", "/v1/memories/{memory_id}"),
+    _Endpoint("list_vaults", "GET", "/v1/vaults"),
+    _Endpoint("create_vault", "POST", "/v1/vaults", accepts_body=True),
+    _Endpoint("get_vault", "GET", "/v1/vaults/{vault_id}"),
+    _Endpoint("list_connectors", "GET", "/v1/connectors"),
+    _Endpoint("get_connector", "GET", "/v1/connectors/{connector_id}"),
+    _Endpoint("list_skills", "GET", "/v1/skills"),
+    _Endpoint("get_skill", "GET", "/v1/skills/{skill_id}"),
+    _Endpoint("list_outcomes", "GET", "/v1/outcomes"),
+    _Endpoint("get_outcome", "GET", "/v1/outcomes/{outcome_id}"),
+    _Endpoint("list_quotas", "GET", "/v1/quotas"),
+    _Endpoint("get_quota", "GET", "/v1/quotas/{quota_id}"),
+)
 
 
 def _path_segment(value: str) -> str:
@@ -35,9 +214,104 @@ def _parse_response(response: httpx.Response) -> Any:
 
     if response.status_code == 204:
         return None
-    if response.headers.get("content-type", "").startswith("application/json"):
+    if response.headers.get("content-type", "").lower().startswith("application/json"):
         return response.json()
     return response.content
+
+
+def _render_endpoint_path(
+    endpoint: _Endpoint,
+    path_args: tuple[object, ...],
+    path_kwargs: dict[str, object],
+) -> str:
+    names = endpoint.path_params
+    if len(path_args) > len(names):
+        raise TypeError(
+            f"{endpoint.name}() takes {len(names)} path argument(s) "
+            f"but {len(path_args)} were given"
+        )
+
+    values: dict[str, object] = {}
+    for name, value in zip(names, path_args, strict=False):
+        values[name] = value
+
+    duplicate_names = set(values) & set(path_kwargs)
+    if duplicate_names:
+        duplicate = sorted(duplicate_names)[0]
+        raise TypeError(f"{endpoint.name}() got multiple values for '{duplicate}'")
+
+    missing = []
+    for name in names[len(path_args) :]:
+        try:
+            values[name] = path_kwargs.pop(name)
+        except KeyError:
+            missing.append(name)
+    if missing:
+        missing_args = ", ".join(missing)
+        raise TypeError(f"{endpoint.name}() missing path argument(s): {missing_args}")
+
+    if path_kwargs:
+        unexpected = ", ".join(sorted(path_kwargs))
+        raise TypeError(
+            f"{endpoint.name}() got unexpected path argument(s): {unexpected}"
+        )
+
+    path = endpoint.path
+    for name, value in values.items():
+        path = path.replace(f"{{{name}}}", _path_segment(str(value)))
+    return path
+
+
+def _prepare_endpoint_call(
+    endpoint: _Endpoint,
+    path_args: tuple[object, ...],
+    path_kwargs: dict[str, object],
+    body: JsonDict | None,
+) -> tuple[str, bool, bool]:
+    if body is not None and not endpoint.accepts_body:
+        raise TypeError(f"{endpoint.name}() does not accept a body")
+    path = _render_endpoint_path(endpoint, path_args, path_kwargs)
+    auth = not endpoint.public
+    protocol = not endpoint.public
+    return path, auth, protocol
+
+
+def _endpoint_signature(endpoint: _Endpoint) -> Signature:
+    parameters = [
+        Parameter(name, Parameter.POSITIONAL_OR_KEYWORD, annotation=str)
+        for name in endpoint.path_params
+    ]
+    parameters.append(
+        Parameter(
+            "params",
+            Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=dict[str, Any] | None,
+        )
+    )
+    if endpoint.accepts_body:
+        parameters.append(
+            Parameter(
+                "body",
+                Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=JsonDict | None,
+            )
+        )
+    parameters.append(
+        Parameter(
+            "idempotency_key",
+            Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=str | None,
+        )
+    )
+    return_annotation: object
+    if endpoint.stream:
+        return_annotation = Iterator[StreamEvent]
+    else:
+        return_annotation = Any
+    return Signature(parameters, return_annotation=return_annotation)
 
 
 class _BaseClient:
@@ -55,15 +329,20 @@ class _BaseClient:
         self.credential = credential
         self.token = token
 
-    def _auth_headers(self, *, protocol: bool = True) -> dict[str, str]:
+    def _auth_headers(
+        self, *, auth: bool = True, protocol: bool = True
+    ) -> dict[str, str]:
+        headers = {}
+        if protocol:
+            headers[HARN_PROTOCOL_HEADER] = self.protocol_version
+        if not auth:
+            return headers
+
         token = self.token
         if token is None and self.credential is not None:
             token = self.credential.get_token()
         if token is None:
             token = AmbientCredential().get_token()
-        headers = {}
-        if protocol:
-            headers[HARN_PROTOCOL_HEADER] = self.protocol_version
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
@@ -93,7 +372,7 @@ class HarnClient(_BaseClient):
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "HarnClient":
+    def __enter__(self) -> HarnClient:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -107,9 +386,10 @@ class HarnClient(_BaseClient):
         params: dict[str, Any] | None = None,
         json: JsonDict | None = None,
         idempotency_key: str | None = None,
+        auth: bool = True,
         protocol: bool = True,
     ) -> Any:
-        headers = self._auth_headers(protocol=protocol)
+        headers = self._auth_headers(auth=auth, protocol=protocol)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = self._client.request(
@@ -125,6 +405,7 @@ class HarnClient(_BaseClient):
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
+        auth: bool = True,
         protocol: bool = True,
     ) -> Any:
         return self._request(
@@ -133,6 +414,7 @@ class HarnClient(_BaseClient):
             params=params,
             json=body,
             idempotency_key=idempotency_key,
+            auth=auth,
             protocol=protocol,
         )
 
@@ -141,921 +423,41 @@ class HarnClient(_BaseClient):
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        auth: bool = True,
         protocol: bool = True,
-    ):
-        headers = self._auth_headers(protocol=protocol)
+    ) -> Iterator[StreamEvent]:
+        headers = self._auth_headers(auth=auth, protocol=protocol)
         with self._client.stream(
             "GET", path, params=params, headers=headers
         ) as response:
-            response.raise_for_status()
+            if response.is_error:
+                response.read()
+                _parse_response(response)
             yield from parse_sse_lines(response.iter_lines())
 
-    def get_protocol_discovery(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1", params=params, protocol=False)
-
-    def get_agent_card(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/agent-card", params=params, protocol=False)
-
-    def get_well_known_agent_card(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request(
-            "GET", "/.well-known/agent-card.json", params=params, protocol=False
-        )
-
-    def list_personas(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/personas", params=params)
-
-    def create_persona(
+    def _call_endpoint(
         self,
+        endpoint: _Endpoint,
+        path_args: tuple[object, ...],
+        path_kwargs: dict[str, object],
+        *,
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
     ) -> Any:
+        path, auth, protocol = _prepare_endpoint_call(
+            endpoint, path_args, path_kwargs, body
+        )
+        if endpoint.stream:
+            return self._stream(path, params=params, auth=auth, protocol=protocol)
         return self._request(
-            "POST",
-            "/v1/personas",
+            endpoint.method,
+            path,
             params=params,
             json=body,
             idempotency_key=idempotency_key,
-        )
-
-    def get_persona(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/personas/{_path_segment(persona_id)}", params=params
-        )
-
-    def get_persona_card(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/personas/{_path_segment(persona_id)}/card", params=params
-        )
-
-    def get_persona_manifest(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET",
-            f"/v1/personas/{_path_segment(persona_id)}/manifest",
-            params=params,
-        )
-
-    def get_persona_schedule_state(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/state",
-            params=params,
-        )
-
-    def pause_persona_schedule(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/pause",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def resume_persona_schedule(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def update_persona(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "PATCH",
-            f"/v1/personas/{_path_segment(persona_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_workspaces(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/workspaces", params=params)
-
-    def create_workspace(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/workspaces",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_workspace(
-        self,
-        workspace_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/workspaces/{_path_segment(workspace_id)}", params=params
-        )
-
-    def update_workspace(
-        self,
-        workspace_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "PATCH",
-            f"/v1/workspaces/{_path_segment(workspace_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_sessions(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/sessions", params=params)
-
-    def create_session(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/sessions",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}", params=params
-        )
-
-    def update_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "PATCH",
-            f"/v1/sessions/{_path_segment(session_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def suspend_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/suspend",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def resume_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_session_audit(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/audit", params=params
-        )
-
-    def close_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/close",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def fork_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/fork",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_session_messages(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/messages", params=params
-        )
-
-    def append_session_message(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/messages",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_session_tasks(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/tasks", params=params
-        )
-
-    def submit_session_task(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/tasks",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_session_branches(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/branches", params=params
-        )
-
-    def create_session_branch(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/branches",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_session_events(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/events", params=params
-        )
-
-    def stream_session_events(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._stream(
-            f"/v1/sessions/{_path_segment(session_id)}/events/stream", params=params
-        )
-
-    def list_tasks(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/tasks", params=params)
-
-    def submit_task(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/tasks",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}", params=params
-        )
-
-    def cancel_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/cancel",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def replay_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/replay",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def suspend_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/suspend",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def resume_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def append_task_message(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/messages",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_task_events(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}/events", params=params
-        )
-
-    def stream_task_events(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._stream(f"/v1/tasks/{_path_segment(task_id)}/stream", params=params)
-
-    def list_task_receipts(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}/receipts", params=params
-        )
-
-    def get_branch(
-        self,
-        branch_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/branches/{_path_segment(branch_id)}", params=params
-        )
-
-    def get_message(
-        self,
-        message_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/messages/{_path_segment(message_id)}", params=params
-        )
-
-    def list_artifacts(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/artifacts", params=params)
-
-    def register_artifact(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/artifacts",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_artifact(
-        self,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/artifacts/{_path_segment(artifact_id)}", params=params
-        )
-
-    def download_artifact_content(
-        self,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/artifacts/{_path_segment(artifact_id)}/content", params=params
-        )
-
-    def list_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/events", params=params)
-
-    def get_event(
-        self,
-        event_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/events/{_path_segment(event_id)}", params=params
-        )
-
-    def stream_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._stream("/v1/events/stream", params=params)
-
-    def get_receipt(
-        self,
-        receipt_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/receipts/{_path_segment(receipt_id)}", params=params
-        )
-
-    def verify_receipt(
-        self,
-        receipt_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/receipts/{_path_segment(receipt_id)}/verify",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_lifecycle_audit(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/audit/lifecycle", params=params)
-
-    def list_pipeline_audit(
-        self,
-        pipeline_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/pipelines/{_path_segment(pipeline_id)}/audit", params=params
-        )
-
-    def list_channel_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/channel-events", params=params)
-
-    def list_context_packs(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/context-packs", params=params)
-
-    def create_context_pack(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/context-packs",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_context_pack(
-        self,
-        pack_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/context-packs/{_path_segment(pack_id)}", params=params
-        )
-
-    def diff_context_pack(
-        self,
-        pack_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/context-packs/{_path_segment(pack_id)}/diff", params=params
-        )
-
-    def get_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}",
-            params=params,
-        )
-
-    def approve_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/approve",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def revoke_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/revoke",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def review_context_pack_artifact(
-        self,
-        pack_id: str,
-        version: str,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/artifacts/{_path_segment(artifact_id)}/review",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def resolve_context_pack_mounts(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/context-packs/mounts/resolve",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_tool_call_receipts(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/tool-call-receipts", params=params)
-
-    def search_tool_call_receipts(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/tool-call-receipts/search",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def list_run_tool_call_receipts(
-        self,
-        run_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET",
-            f"/v1/runs/{_path_segment(run_id)}/tool-call-receipts",
-            params=params,
-        )
-
-    def list_memories(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/memories", params=params)
-
-    def create_memory(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/memories",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_memory(
-        self,
-        memory_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/memories/{_path_segment(memory_id)}", params=params
-        )
-
-    def delete_memory(
-        self,
-        memory_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "DELETE", f"/v1/memories/{_path_segment(memory_id)}", params=params
-        )
-
-    def list_vaults(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/vaults", params=params)
-
-    def create_vault(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/vaults",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    def get_vault(
-        self,
-        vault_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/vaults/{_path_segment(vault_id)}", params=params
-        )
-
-    def list_connectors(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/connectors", params=params)
-
-    def get_connector(
-        self,
-        connector_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/connectors/{_path_segment(connector_id)}", params=params
-        )
-
-    def list_skills(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/skills", params=params)
-
-    def get_skill(
-        self,
-        skill_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/skills/{_path_segment(skill_id)}", params=params
-        )
-
-    def list_outcomes(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/outcomes", params=params)
-
-    def get_outcome(
-        self,
-        outcome_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/outcomes/{_path_segment(outcome_id)}", params=params
-        )
-
-    def list_quotas(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return self._request("GET", "/v1/quotas", params=params)
-
-    def get_quota(
-        self,
-        quota_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return self._request(
-            "GET", f"/v1/quotas/{_path_segment(quota_id)}", params=params
+            auth=auth,
+            protocol=protocol,
         )
 
 
@@ -1083,7 +485,7 @@ class AsyncHarnClient(_BaseClient):
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def __aenter__(self) -> "AsyncHarnClient":
+    async def __aenter__(self) -> AsyncHarnClient:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -1097,9 +499,10 @@ class AsyncHarnClient(_BaseClient):
         params: dict[str, Any] | None = None,
         json: JsonDict | None = None,
         idempotency_key: str | None = None,
+        auth: bool = True,
         protocol: bool = True,
     ) -> Any:
-        headers = self._auth_headers(protocol=protocol)
+        headers = self._auth_headers(auth=auth, protocol=protocol)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = await self._client.request(
@@ -1115,6 +518,7 @@ class AsyncHarnClient(_BaseClient):
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
+        auth: bool = True,
         protocol: bool = True,
     ) -> Any:
         return await self._request(
@@ -1123,6 +527,7 @@ class AsyncHarnClient(_BaseClient):
             params=params,
             json=body,
             idempotency_key=idempotency_key,
+            auth=auth,
             protocol=protocol,
         )
 
@@ -1131,14 +536,17 @@ class AsyncHarnClient(_BaseClient):
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        auth: bool = True,
         protocol: bool = True,
-    ):
-        headers = self._auth_headers(protocol=protocol)
+    ) -> AsyncIterator[StreamEvent]:
+        headers = self._auth_headers(auth=auth, protocol=protocol)
         parser = SSEParser()
         async with self._client.stream(
             "GET", path, params=params, headers=headers
         ) as response:
-            response.raise_for_status()
+            if response.is_error:
+                await response.aread()
+                _parse_response(response)
             async for line in response.aiter_lines():
                 event = parser.push(line)
                 if event is not None:
@@ -1147,917 +555,127 @@ class AsyncHarnClient(_BaseClient):
         if tail is not None:
             yield tail
 
-    async def get_protocol_discovery(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1", params=params, protocol=False)
-
-    async def get_agent_card(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request(
-            "GET", "/v1/agent-card", params=params, protocol=False
-        )
-
-    async def get_well_known_agent_card(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request(
-            "GET", "/.well-known/agent-card.json", params=params, protocol=False
-        )
-
-    async def list_personas(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/personas", params=params)
-
-    async def create_persona(
+    async def _call_endpoint(
         self,
+        endpoint: _Endpoint,
+        path_args: tuple[object, ...],
+        path_kwargs: dict[str, object],
+        *,
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
     ) -> Any:
+        path, auth, protocol = _prepare_endpoint_call(
+            endpoint, path_args, path_kwargs, body
+        )
         return await self._request(
-            "POST",
-            "/v1/personas",
+            endpoint.method,
+            path,
             params=params,
             json=body,
             idempotency_key=idempotency_key,
+            auth=auth,
+            protocol=protocol,
         )
 
-    async def get_persona(
+    async def _call_stream_endpoint(
         self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/personas/{_path_segment(persona_id)}", params=params
-        )
-
-    async def get_persona_card(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/personas/{_path_segment(persona_id)}/card", params=params
-        )
-
-    async def get_persona_manifest(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET",
-            f"/v1/personas/{_path_segment(persona_id)}/manifest",
-            params=params,
-        )
-
-    async def get_persona_schedule_state(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/state",
-            params=params,
-        )
-
-    async def pause_persona_schedule(
-        self,
-        persona_id: str,
+        endpoint: _Endpoint,
+        path_args: tuple[object, ...],
+        path_kwargs: dict[str, object],
+        *,
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/pause",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
+    ) -> AsyncIterator[StreamEvent]:
+        path, auth, protocol = _prepare_endpoint_call(
+            endpoint, path_args, path_kwargs, body
         )
-
-    async def resume_persona_schedule(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/personas/{_path_segment(persona_id)}/schedule/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def update_persona(
-        self,
-        persona_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "PATCH",
-            f"/v1/personas/{_path_segment(persona_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_workspaces(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/workspaces", params=params)
-
-    async def create_workspace(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/workspaces",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_workspace(
-        self,
-        workspace_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/workspaces/{_path_segment(workspace_id)}", params=params
-        )
-
-    async def update_workspace(
-        self,
-        workspace_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "PATCH",
-            f"/v1/workspaces/{_path_segment(workspace_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_sessions(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/sessions", params=params)
-
-    async def create_session(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/sessions",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}", params=params
-        )
-
-    async def update_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "PATCH",
-            f"/v1/sessions/{_path_segment(session_id)}",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def suspend_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/suspend",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def resume_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_session_audit(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/audit", params=params
-        )
-
-    async def close_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/close",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def fork_session(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/fork",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_session_messages(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/messages", params=params
-        )
-
-    async def append_session_message(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/messages",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_session_tasks(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/tasks", params=params
-        )
-
-    async def submit_session_task(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/tasks",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_session_branches(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/branches", params=params
-        )
-
-    async def create_session_branch(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/sessions/{_path_segment(session_id)}/branches",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_session_events(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/sessions/{_path_segment(session_id)}/events", params=params
-        )
-
-    async def stream_session_events(
-        self,
-        session_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
         async for event in self._stream(
-            f"/v1/sessions/{_path_segment(session_id)}/events/stream", params=params
+            path, params=params, auth=auth, protocol=protocol
         ):
             yield event
 
-    async def list_tasks(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/tasks", params=params)
 
-    async def submit_task(
-        self,
+def _make_sync_endpoint(endpoint: _Endpoint):
+    def endpoint_method(
+        self: HarnClient,
+        *path_args: object,
         params: dict[str, Any] | None = None,
         body: JsonDict | None = None,
         idempotency_key: str | None = None,
+        **path_kwargs: object,
     ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/tasks",
+        return self._call_endpoint(
+            endpoint,
+            path_args,
+            path_kwargs,
             params=params,
-            json=body,
+            body=body,
             idempotency_key=idempotency_key,
         )
 
-    async def get_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}", params=params
+    endpoint_method.__name__ = endpoint.name
+    endpoint_method.__qualname__ = f"{HarnClient.__name__}.{endpoint.name}"
+    endpoint_method.__doc__ = f"{endpoint.method} {endpoint.path}"
+    endpoint_method.__signature__ = _endpoint_signature(endpoint)  # type: ignore[attr-defined]
+    return endpoint_method
+
+
+def _make_async_endpoint(endpoint: _Endpoint):
+    if endpoint.stream:
+
+        async def async_stream_endpoint_method(
+            self: AsyncHarnClient,
+            *path_args: object,
+            params: dict[str, Any] | None = None,
+            body: JsonDict | None = None,
+            idempotency_key: str | None = None,
+            **path_kwargs: object,
+        ) -> AsyncIterator[StreamEvent]:
+            async for event in self._call_stream_endpoint(
+                endpoint,
+                path_args,
+                path_kwargs,
+                params=params,
+                body=body,
+                idempotency_key=idempotency_key,
+            ):
+                yield event
+
+        method = async_stream_endpoint_method
+        signature = _endpoint_signature(endpoint).replace(
+            return_annotation=AsyncIterator[StreamEvent]
         )
+    else:
 
-    async def cancel_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/cancel",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
+        async def async_endpoint_method(
+            self: AsyncHarnClient,
+            *path_args: object,
+            params: dict[str, Any] | None = None,
+            body: JsonDict | None = None,
+            idempotency_key: str | None = None,
+            **path_kwargs: object,
+        ) -> Any:
+            return await self._call_endpoint(
+                endpoint,
+                path_args,
+                path_kwargs,
+                params=params,
+                body=body,
+                idempotency_key=idempotency_key,
+            )
 
-    async def replay_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/replay",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
+        method = async_endpoint_method
+        signature = _endpoint_signature(endpoint)
 
-    async def suspend_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/suspend",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
+    method.__name__ = endpoint.name
+    method.__qualname__ = f"{AsyncHarnClient.__name__}.{endpoint.name}"
+    method.__doc__ = f"{endpoint.method} {endpoint.path}"
+    method.__signature__ = signature  # type: ignore[attr-defined]
+    return method
 
-    async def resume_task(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/resume",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
 
-    async def append_task_message(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/tasks/{_path_segment(task_id)}/messages",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_task_events(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}/events", params=params
-        )
-
-    async def stream_task_events(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        async for event in self._stream(
-            f"/v1/tasks/{_path_segment(task_id)}/stream", params=params
-        ):
-            yield event
-
-    async def list_task_receipts(
-        self,
-        task_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/tasks/{_path_segment(task_id)}/receipts", params=params
-        )
-
-    async def get_branch(
-        self,
-        branch_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/branches/{_path_segment(branch_id)}", params=params
-        )
-
-    async def get_message(
-        self,
-        message_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/messages/{_path_segment(message_id)}", params=params
-        )
-
-    async def list_artifacts(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/artifacts", params=params)
-
-    async def register_artifact(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/artifacts",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_artifact(
-        self,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/artifacts/{_path_segment(artifact_id)}", params=params
-        )
-
-    async def download_artifact_content(
-        self,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/artifacts/{_path_segment(artifact_id)}/content", params=params
-        )
-
-    async def list_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/events", params=params)
-
-    async def get_event(
-        self,
-        event_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/events/{_path_segment(event_id)}", params=params
-        )
-
-    async def stream_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        async for event in self._stream("/v1/events/stream", params=params):
-            yield event
-
-    async def get_receipt(
-        self,
-        receipt_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/receipts/{_path_segment(receipt_id)}", params=params
-        )
-
-    async def verify_receipt(
-        self,
-        receipt_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/receipts/{_path_segment(receipt_id)}/verify",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_lifecycle_audit(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/audit/lifecycle", params=params)
-
-    async def list_pipeline_audit(
-        self,
-        pipeline_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/pipelines/{_path_segment(pipeline_id)}/audit", params=params
-        )
-
-    async def list_channel_events(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/channel-events", params=params)
-
-    async def list_context_packs(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/context-packs", params=params)
-
-    async def create_context_pack(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/context-packs",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_context_pack(
-        self,
-        pack_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/context-packs/{_path_segment(pack_id)}", params=params
-        )
-
-    async def diff_context_pack(
-        self,
-        pack_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/context-packs/{_path_segment(pack_id)}/diff", params=params
-        )
-
-    async def get_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}",
-            params=params,
-        )
-
-    async def approve_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/approve",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def revoke_context_pack_version(
-        self,
-        pack_id: str,
-        version: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/revoke",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def review_context_pack_artifact(
-        self,
-        pack_id: str,
-        version: str,
-        artifact_id: str,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            f"/v1/context-packs/{_path_segment(pack_id)}/versions/{_path_segment(version)}/artifacts/{_path_segment(artifact_id)}/review",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def resolve_context_pack_mounts(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/context-packs/mounts/resolve",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_tool_call_receipts(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/tool-call-receipts", params=params)
-
-    async def search_tool_call_receipts(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/tool-call-receipts/search",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def list_run_tool_call_receipts(
-        self,
-        run_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET",
-            f"/v1/runs/{_path_segment(run_id)}/tool-call-receipts",
-            params=params,
-        )
-
-    async def list_memories(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/memories", params=params)
-
-    async def create_memory(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/memories",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_memory(
-        self,
-        memory_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/memories/{_path_segment(memory_id)}", params=params
-        )
-
-    async def delete_memory(
-        self,
-        memory_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "DELETE", f"/v1/memories/{_path_segment(memory_id)}", params=params
-        )
-
-    async def list_vaults(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/vaults", params=params)
-
-    async def create_vault(
-        self,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "POST",
-            "/v1/vaults",
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-        )
-
-    async def get_vault(
-        self,
-        vault_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/vaults/{_path_segment(vault_id)}", params=params
-        )
-
-    async def list_connectors(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/connectors", params=params)
-
-    async def get_connector(
-        self,
-        connector_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/connectors/{_path_segment(connector_id)}", params=params
-        )
-
-    async def list_skills(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/skills", params=params)
-
-    async def get_skill(
-        self,
-        skill_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/skills/{_path_segment(skill_id)}", params=params
-        )
-
-    async def list_outcomes(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/outcomes", params=params)
-
-    async def get_outcome(
-        self,
-        outcome_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/outcomes/{_path_segment(outcome_id)}", params=params
-        )
-
-    async def list_quotas(
-        self, params: dict[str, Any] | None = None, idempotency_key: str | None = None
-    ) -> Any:
-        return await self._request("GET", "/v1/quotas", params=params)
-
-    async def get_quota(
-        self,
-        quota_id: str,
-        params: dict[str, Any] | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        return await self._request(
-            "GET", f"/v1/quotas/{_path_segment(quota_id)}", params=params
-        )
+for _endpoint in _OPENAPI_ENDPOINTS:
+    setattr(HarnClient, _endpoint.name, _make_sync_endpoint(_endpoint))
+    setattr(AsyncHarnClient, _endpoint.name, _make_async_endpoint(_endpoint))
