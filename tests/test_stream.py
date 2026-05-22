@@ -4,10 +4,10 @@ from harn.stream import parse_sse_lines
 def test_parse_sse_lines_json_payload() -> None:
     lines = iter(
         [
-            "id: 1\n",
-            "event: delta\n",
-            'data: {"chunk":"he"}\n',
-            "\n",
+            "id: 1\r\n",
+            "event: delta\r\n",
+            'data: {"chunk":"he"}\r\n',
+            "\r\n",
             "id: 2\n",
             'data: {"chunk":"llo"}\n',
             "\n",

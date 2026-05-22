@@ -68,7 +68,7 @@ def parse_sse_lines(lines: Iterator[str]) -> Iterator[StreamEvent]:
     parser = SSEParser()
 
     for raw in lines:
-        line = raw.rstrip("\n")
+        line = raw.rstrip("\r\n")
         event = parser.push(line)
         if event is not None:
             yield event
