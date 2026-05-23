@@ -28,13 +28,30 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
 ## Authentication
 
 The client sends `Authorization: Bearer ...` when a token is available. Token
-lookup order is explicit `token`, then `credential`, then `HARN_API_KEY`.
+lookup order is explicit `token`, then `credential`. As of the 2026-05-23
+security sweep, the ambient `HARN_API_KEY` environment variable is **never**
+read implicitly — pass `credential=AmbientCredential()` to opt in.
 
 ```python
-from harn import HarnClient
+from harn import AmbientCredential, HarnClient
 
+# Explicit token
 client = HarnClient(token="harn_live_...")
+
+# Opt-in to $HARN_API_KEY (used to be automatic; now requires this line)
+client = HarnClient(credential=AmbientCredential())
 ```
+
+### Host-pinned bearer
+
+The bearer token is bound to the host parsed from `base_url`. If a request URL
+points at a different host (for example because you passed an absolute URL to
+`client.request(...)`), the `Authorization` header is **not** attached. This
+prevents a misconfigured `base_url` or a server-side redirect from leaking
+the token cross-host. The constructor also raises `ValueError` for any
+`base_url` whose scheme is not `https://` (with the single exception of
+`http://localhost` and `http://127.0.0.1` for local development), and emits a
+`UserWarning` when you override `base_url` while a token is configured.
 
 For OAuth device flow, call OIDC discovery when the issuer advertises custom
 device and token endpoints:
@@ -82,6 +99,20 @@ with HarnClient(base_url="http://localhost:8080") as client:
     for event in client.stream_task_events("task_123"):
         print(event.event, event.data)
 ```
+
+### Streaming artifact downloads
+
+For large artifacts (videos, models, datasets) use `stream_artifact_content`,
+which yields chunks without buffering the body:
+
+```python
+with HarnClient(token="...") as client, open("video.mp4", "wb") as out:
+    for chunk in client.stream_artifact_content("art_123"):
+        out.write(chunk)
+```
+
+`download_artifact_content` is preserved for backwards compatibility but emits
+a `DeprecationWarning` and loads the whole response into memory.
 
 ## Tool helper
 

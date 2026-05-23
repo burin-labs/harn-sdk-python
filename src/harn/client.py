@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from inspect import Parameter, Signature
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
-from .auth import AmbientCredential, CredentialProvider
+from .auth import CredentialProvider
 from .models import ApiError, ErrorBody, JsonDict, StreamEvent
 from .stream import SSEParser, parse_sse_lines
 
 HARN_PROTOCOL_VERSION = "agents-protocol-2026-04-25"
 HARN_PROTOCOL_HEADER = "Harn-Agents-Protocol-Version"
+
+DEFAULT_BASE_URL = "https://api.harnlang.com"
+_LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 _PATH_PARAM_RE = re.compile(r"{([A-Za-z_][A-Za-z0-9_]*)}")
 
@@ -314,23 +318,79 @@ def _endpoint_signature(endpoint: _Endpoint) -> Signature:
     return Signature(parameters, return_annotation=return_annotation)
 
 
+def _validate_base_url(base_url: str) -> tuple[str, str]:
+    """Validate a configured base URL and return ``(normalized_url, host)``.
+
+    F9: rejects schemes other than ``https`` (or ``http`` for localhost) so an
+    accidental ``http://attacker/`` cannot ship bearer tokens in cleartext.
+    """
+    parts = urlsplit(base_url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme == "https":
+        pass
+    elif scheme == "http" and host in _LOCAL_HTTP_HOSTS:
+        pass
+    else:
+        raise ValueError(
+            f"HarnClient base_url must use https:// (got {base_url!r}); "
+            "http:// is only allowed for localhost/127.0.0.1"
+        )
+    if not host:
+        raise ValueError(f"HarnClient base_url is missing a host: {base_url!r}")
+    return base_url.rstrip("/"), host
+
+
+def _outgoing_host(base_host: str, base_url: str, path: str) -> str:
+    """Compute the eventual outgoing host for ``path`` against ``base_url``.
+
+    httpx joins absolute ``path`` (with scheme) verbatim and otherwise resolves
+    against ``base_url``. We mirror that to decide whether the request will
+    actually leave the registered host (F1 host-pin check).
+    """
+    candidate = urlsplit(path)
+    if candidate.scheme and candidate.hostname:
+        return candidate.hostname.lower()
+    return base_host
+
+
 class _BaseClient:
     def __init__(
         self,
-        base_url: str = "https://api.harnlang.com",
+        base_url: str = DEFAULT_BASE_URL,
         token: str | None = None,
         credential: CredentialProvider | None = None,
         timeout: float = 30.0,
         protocol_version: str = HARN_PROTOCOL_VERSION,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        normalized, host = _validate_base_url(base_url)
+        self.base_url = normalized
+        self._base_host = host
         self.timeout = timeout
         self.protocol_version = protocol_version
         self.credential = credential
         self.token = token
 
+        # F1: one-time warning when the caller overrode the default base_url AND
+        # configured a token. Bearer credentials issued for api.harnlang.com
+        # almost certainly should not travel to a custom host.
+        if (token is not None or credential is not None) and base_url.rstrip(
+            "/"
+        ) != DEFAULT_BASE_URL:
+            warnings.warn(
+                f"HarnClient base_url overridden to {base_url!r} while a "
+                "token/credential is configured. The token will only be sent "
+                "to that exact host; cross-host requests will be unauthenticated.",
+                UserWarning,
+                stacklevel=3,
+            )
+
     def _auth_headers(
-        self, *, auth: bool = True, protocol: bool = True
+        self,
+        *,
+        path: str = "",
+        auth: bool = True,
+        protocol: bool = True,
     ) -> dict[str, str]:
         headers = {}
         if protocol:
@@ -338,20 +398,42 @@ class _BaseClient:
         if not auth:
             return headers
 
+        # F1: host-pin. If the outgoing request will reach a different host
+        # than the configured base, do not attach the bearer token. Cross-host
+        # leaks via an absolute URL or a maliciously joined path are the
+        # primary threat we are guarding against here.
+        outgoing_host = _outgoing_host(self._base_host, self.base_url, path)
+        if outgoing_host != self._base_host:
+            return headers
+
         token = self.token
         if token is None and self.credential is not None:
             token = self.credential.get_token()
-        if token is None:
-            token = AmbientCredential().get_token()
+        # F2: the AmbientCredential() auto-fallback to $HARN_API_KEY was
+        # removed in the 2026-05-23 security sweep. Callers must now pass
+        # `credential=AmbientCredential()` explicitly to opt in.
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
 
 class HarnClient(_BaseClient):
+    """Synchronous Harn Agents API client.
+
+    Security defaults (set by the 2026-05-23 sweep):
+
+    * ``base_url`` must use ``https://`` unless the host is ``localhost`` or
+      ``127.0.0.1`` (F9).
+    * If the outgoing request URL host differs from ``base_url``'s host the
+      ``Authorization`` header is *not* attached (F1). The token is pinned to
+      the host you configured.
+    * The ambient ``HARN_API_KEY`` environment variable is **never** read
+      implicitly — pass ``credential=AmbientCredential()`` to opt in (F2).
+    """
+
     def __init__(
         self,
-        base_url: str = "https://api.harnlang.com",
+        base_url: str = DEFAULT_BASE_URL,
         token: str | None = None,
         credential: CredentialProvider | None = None,
         timeout: float = 30.0,
@@ -389,7 +471,7 @@ class HarnClient(_BaseClient):
         auth: bool = True,
         protocol: bool = True,
     ) -> Any:
-        headers = self._auth_headers(auth=auth, protocol=protocol)
+        headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = self._client.request(
@@ -426,7 +508,7 @@ class HarnClient(_BaseClient):
         auth: bool = True,
         protocol: bool = True,
     ) -> Iterator[StreamEvent]:
-        headers = self._auth_headers(auth=auth, protocol=protocol)
+        headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
         with self._client.stream(
             "GET", path, params=params, headers=headers
         ) as response:
@@ -434,6 +516,31 @@ class HarnClient(_BaseClient):
                 response.read()
                 _parse_response(response)
             yield from parse_sse_lines(response.iter_lines())
+
+    def stream_artifact_content(
+        self,
+        artifact_id: str,
+        *,
+        params: dict[str, Any] | None = None,
+        chunk_size: int | None = None,
+    ) -> Iterator[bytes]:
+        """Stream artifact bytes without buffering the whole body.
+
+        Added in the 2026-05-23 security sweep (F8). Use this for large
+        artifacts (videos, models, datasets) that would OOM the caller if
+        loaded via :meth:`download_artifact_content`. ``download_artifact_content``
+        is preserved for backwards compatibility but is deprecated for large
+        payloads.
+        """
+        path = f"/v1/artifacts/{_path_segment(str(artifact_id))}/content"
+        headers = self._auth_headers(path=path, auth=True, protocol=True)
+        with self._client.stream(
+            "GET", path, params=params, headers=headers
+        ) as response:
+            if response.is_error:
+                response.read()
+                _parse_response(response)
+            yield from response.iter_bytes(chunk_size)
 
     def _call_endpoint(
         self,
@@ -462,9 +569,15 @@ class HarnClient(_BaseClient):
 
 
 class AsyncHarnClient(_BaseClient):
+    """Asynchronous Harn Agents API client.
+
+    Shares the same security defaults as :class:`HarnClient` (host-pinned
+    bearer token, https-only base_url, opt-in :class:`AmbientCredential`).
+    """
+
     def __init__(
         self,
-        base_url: str = "https://api.harnlang.com",
+        base_url: str = DEFAULT_BASE_URL,
         token: str | None = None,
         credential: CredentialProvider | None = None,
         timeout: float = 30.0,
@@ -502,7 +615,7 @@ class AsyncHarnClient(_BaseClient):
         auth: bool = True,
         protocol: bool = True,
     ) -> Any:
-        headers = self._auth_headers(auth=auth, protocol=protocol)
+        headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = await self._client.request(
@@ -539,7 +652,7 @@ class AsyncHarnClient(_BaseClient):
         auth: bool = True,
         protocol: bool = True,
     ) -> AsyncIterator[StreamEvent]:
-        headers = self._auth_headers(auth=auth, protocol=protocol)
+        headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
         parser = SSEParser()
         async with self._client.stream(
             "GET", path, params=params, headers=headers
@@ -554,6 +667,31 @@ class AsyncHarnClient(_BaseClient):
         tail = parser.finish()
         if tail is not None:
             yield tail
+
+    async def stream_artifact_content(
+        self,
+        artifact_id: str,
+        *,
+        params: dict[str, Any] | None = None,
+        chunk_size: int | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Stream artifact bytes asynchronously without buffering the body.
+
+        Added in the 2026-05-23 security sweep (F8); pair with the sync
+        :meth:`HarnClient.stream_artifact_content`. ``download_artifact_content``
+        remains for backwards compatibility but is deprecated for large
+        payloads.
+        """
+        path = f"/v1/artifacts/{_path_segment(str(artifact_id))}/content"
+        headers = self._auth_headers(path=path, auth=True, protocol=True)
+        async with self._client.stream(
+            "GET", path, params=params, headers=headers
+        ) as response:
+            if response.is_error:
+                await response.aread()
+                _parse_response(response)
+            async for chunk in response.aiter_bytes(chunk_size):
+                yield chunk
 
     async def _call_endpoint(
         self,
@@ -679,3 +817,37 @@ def _make_async_endpoint(endpoint: _Endpoint):
 for _endpoint in _OPENAPI_ENDPOINTS:
     setattr(HarnClient, _endpoint.name, _make_sync_endpoint(_endpoint))
     setattr(AsyncHarnClient, _endpoint.name, _make_async_endpoint(_endpoint))
+
+
+def _wrap_with_deprecation(
+    target_cls: type, method_name: str, replacement: str
+) -> None:
+    """Mark a generated endpoint as deprecated by emitting a DeprecationWarning."""
+    original = getattr(target_cls, method_name)
+
+    def deprecated_wrapper(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        warnings.warn(
+            f"{target_cls.__name__}.{method_name}() loads the entire artifact "
+            f"into memory and is deprecated for large payloads; use "
+            f"{target_cls.__name__}.{replacement}() to stream chunks instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return original(self, *args, **kwargs)
+
+    deprecated_wrapper.__name__ = method_name
+    deprecated_wrapper.__qualname__ = f"{target_cls.__name__}.{method_name}"
+    deprecated_wrapper.__doc__ = original.__doc__
+    deprecated_wrapper.__signature__ = original.__signature__  # type: ignore[attr-defined]
+    setattr(target_cls, method_name, deprecated_wrapper)
+
+
+# F8: keep the eager downloader (registered above from _OPENAPI_ENDPOINTS) for
+# backwards compatibility but flag it so callers migrate to the streaming
+# variant for any non-trivial payload.
+_wrap_with_deprecation(
+    HarnClient, "download_artifact_content", "stream_artifact_content"
+)
+_wrap_with_deprecation(
+    AsyncHarnClient, "download_artifact_content", "stream_artifact_content"
+)
