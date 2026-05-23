@@ -24,6 +24,22 @@ class APIKeyCredential(CredentialProvider):
 
 @dataclass
 class AmbientCredential(CredentialProvider):
+    """Read a bearer token from the ``HARN_API_KEY`` environment variable.
+
+    .. note::
+
+        As of the 2026-05-23 security sweep this credential is **opt-in**:
+        :class:`HarnClient` no longer falls back to it automatically. Pass it
+        explicitly when constructing the client::
+
+            HarnClient(credential=AmbientCredential())
+
+        The old auto-fallback (silently reaching for ``$HARN_API_KEY`` even
+        when no token or credential was supplied) was removed to prevent
+        accidentally shipping a production API key against a localhost or
+        third-party base URL configured for a quick experiment.
+    """
+
     env_var: str = "HARN_API_KEY"
 
     def get_token(self) -> str | None:
