@@ -32,15 +32,15 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(python - <<'PY'
-import re
-from pathlib import Path
-text = Path("pyproject.toml").read_text(encoding="utf-8")
-m = re.search(r'(?m)^version\s*=\s*"([^\"]+)"\s*$', text)
-if not m:
-    raise SystemExit("version not found")
-print(m.group(1))
-PY
-)
+          import re
+          from pathlib import Path
+          text = Path("pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r'(?m)^version\s*=\s*"([^\"]+)"\s*$', text)
+          if not m:
+              raise SystemExit("version not found")
+          print(m.group(1))
+          PY
+          )
           echo "Tag version: $TAG"
           echo "Package version: $PKG_VERSION"
           test "$TAG" = "$PKG_VERSION"
