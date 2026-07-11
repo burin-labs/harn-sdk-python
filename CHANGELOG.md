@@ -6,6 +6,14 @@ calendar-aligned alpha versions while pre-1.0.
 
 ## Unreleased
 
+### Changed
+
+- **Dependency upgrades.** Raised minimum supported versions to the latest
+  releases: `httpx>=0.28.0`, `pydantic>=2.13.0`, `pytest>=9.1.0` (was 8.x),
+  `pytest-asyncio>=1.4.0` (was 0.23.x), and `ruff>=0.15.0`. Upper caps are
+  unchanged. No source changes were required; lint, tests, and packaging all
+  pass under the new floors.
+
 ### Security
 
 - **F1 (HIGH) — Cross-host bearer leak guard.** The `Authorization` header is
