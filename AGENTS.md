@@ -20,13 +20,13 @@ Use Python 3.11 or newer.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 Install release-only tools when you need package checks:
 
 ```bash
-pip install build twine
+python -m pip install build twine
 ```
 
 ## Checks
@@ -53,9 +53,11 @@ python -m twine check dist/*
 - Do not claim named client helpers exist unless they are in `_OPENAPI_ENDPOINTS`.
 - When the API surface changes, update `src/harn/client.py`, `tests/test_client.py`, examples, and `README.md` together.
 - Keep sync and async client behavior aligned.
-- `pyproject.toml` and `src/harn/__init__.py` must carry the same version. Use `scripts/bump_version.py` and verify with `scripts/check_version_sync.py`.
-- Preserve public discovery behavior: `/health`, `/version`, `/openapi.json`, `/v1`, and `/v1/agent-card` do not attach auth or protocol headers.
+- `pyproject.toml` and `src/harn/__init__.py` must carry the same version. Use
+  `scripts/bump_version.py` and verify with `scripts/check_version_sync.py`.
+- Preserve public discovery behavior: `/health`, `/version`, `/openapi.json`,
+  `/v1`, and `/v1/agent-card` do not attach auth or protocol headers.
 
 ## Git hygiene
 
-Work on an isolated `ksinder/` branch. Rebase on `origin/main` before opening a PR.
+Work in an isolated worktree and branch. Rebase on `origin/main` before opening a PR.
