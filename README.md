@@ -154,8 +154,14 @@ See runnable examples in [`examples/`](examples):
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
-pytest
+python -m pip install -e ".[dev]"
+python -m pip install build twine
+python scripts/check_version_sync.py
+ruff format --check src tests scripts
+ruff check src tests scripts
+pytest -q
+python -m build
+python -m twine check dist/*
 ```
 
 ## Release automation
@@ -172,6 +178,7 @@ pytest
 ### Version management
 
 Version is kept in:
+
 - `pyproject.toml` (`[project].version`)
 - `src/harn/__init__.py` (`__version__`)
 
@@ -192,7 +199,8 @@ available.
 3. Run the `Release Bump` workflow with a version like `0.1.0a1`.
 4. The tag triggers `Publish`, which builds and uploads distributions.
 
-If Trusted Publisher requires an existing project first, do a one-time bootstrap upload with a scoped API token, then switch fully to Trusted Publishing.
+If Trusted Publisher requires an existing project first, do a one-time bootstrap
+upload with a scoped API token, then switch fully to Trusted Publishing.
 
 ### Local fallback release
 
