@@ -26,3 +26,11 @@ updates:
       timezone: "America/Los_Angeles"
     cooldown:
       default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
