@@ -15,7 +15,6 @@ import pytest
 
 from harn import AmbientCredential, AsyncHarnClient, HarnClient
 
-
 # ---------------------------------------------------------------------------
 # F1 — host-pinned bearer
 # ---------------------------------------------------------------------------
@@ -62,7 +61,7 @@ def test_host_pin_drops_token_for_cross_host_absolute_url() -> None:
 
     assert captured, "request was never made"
     assert captured[0].url.host == "attacker.example"
-    assert "authorization" not in {k.lower() for k in captured[0].headers.keys()}
+    assert "authorization" not in {k.lower() for k in captured[0].headers}
 
 
 def test_warning_when_base_url_overridden_with_token() -> None:
@@ -227,4 +226,4 @@ async def test_async_host_pin_drops_token_for_cross_host() -> None:
 
     assert captured, "request was never made"
     assert captured[0].url.host == "attacker.example"
-    assert "authorization" not in {k.lower() for k in captured[0].headers.keys()}
+    assert "authorization" not in {k.lower() for k in captured[0].headers}
