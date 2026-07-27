@@ -5,7 +5,7 @@ import warnings
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from inspect import Parameter, Signature
-from typing import Any
+from typing import Any, Self
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -212,7 +212,7 @@ def _parse_response(response: httpx.Response) -> Any:
                 and isinstance(body["error"], dict)
             ):
                 error = ErrorBody.model_validate(body["error"])
-        except Exception:
+        except (TypeError, ValueError):
             body = response.text
         raise ApiError(response.status_code, error, body)
 
@@ -241,7 +241,7 @@ def _render_endpoint_path(
 
     duplicate_names = set(values) & set(path_kwargs)
     if duplicate_names:
-        duplicate = sorted(duplicate_names)[0]
+        duplicate = min(duplicate_names)
         raise TypeError(f"{endpoint.name}() got multiple values for '{duplicate}'")
 
     missing = []
@@ -327,9 +327,7 @@ def _validate_base_url(base_url: str) -> tuple[str, str]:
     parts = urlsplit(base_url)
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
-    if scheme == "https":
-        pass
-    elif scheme == "http" and host in _LOCAL_HTTP_HOSTS:
+    if scheme == "https" or scheme == "http" and host in _LOCAL_HTTP_HOSTS:
         pass
     else:
         raise ValueError(
@@ -454,7 +452,7 @@ class HarnClient(_BaseClient):
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> HarnClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -598,7 +596,7 @@ class AsyncHarnClient(_BaseClient):
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def __aenter__(self) -> AsyncHarnClient:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:

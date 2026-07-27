@@ -1,7 +1,6 @@
 import httpx
 
-from harn.auth import APIKeyCredential, AmbientCredential
-from harn.auth import OAuthDeviceFlowCredential
+from harn.auth import AmbientCredential, APIKeyCredential, OAuthDeviceFlowCredential
 
 
 def test_api_key_credential_returns_value() -> None:

@@ -1,10 +1,10 @@
+from urllib.parse import quote
+
 import httpx
 import pytest
-from urllib.parse import quote
 
 from harn import HARN_PROTOCOL_VERSION, ApiError, AsyncHarnClient, HarnClient
 from harn.client import _OPENAPI_ENDPOINTS
-
 
 EXPECTED_ENDPOINTS = (
     ("get_health", "GET", "/health"),
@@ -312,11 +312,15 @@ def test_stream_errors_raise_api_error() -> None:
         )
 
     transport = httpx.MockTransport(handler)
-    with HarnClient(
-        client=httpx.Client(transport=transport, base_url="https://api.harnlang.com")
-    ) as client:
-        with pytest.raises(ApiError) as exc_info:
-            list(client.stream_events())
+    with (
+        HarnClient(
+            client=httpx.Client(
+                transport=transport, base_url="https://api.harnlang.com"
+            )
+        ) as client,
+        pytest.raises(ApiError) as exc_info,
+    ):
+        list(client.stream_events())
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.error is not None
