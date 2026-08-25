@@ -25,6 +25,34 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
         print(event.event, event.data)
 ```
 
+## Add Harn to an existing app
+
+The generated Harn v0.10.116 client exposes all 85 protocol operations with
+typed request and response models. Import one operation into an existing route:
+
+```python
+import os
+
+from fastapi import FastAPI
+from harn import create_harn_protocol_client
+from harn.protocol.api.runtime import get_provider_catalog
+
+app = FastAPI()
+harn = create_harn_protocol_client(
+    base_url=os.getenv("HARN_BASE_URL", "https://api.harnlang.com"),
+    token=os.getenv("HARN_ACCESS_TOKEN"),
+)
+
+@app.get("/models")
+def models() -> dict[str, object]:
+    catalog = get_provider_catalog.sync(client=harn)
+    return catalog.to_dict() if catalog is not None else {}
+```
+
+See [`examples/fastapi_provider_catalog.py`](examples/fastapi_provider_catalog.py)
+for the runnable FastAPI example. Its test executes the route with an injected
+HTTP transport, so it needs no credential or live Harn server.
+
 ## Authentication
 
 The client sends `Authorization: Bearer ...` when a token is available. Token
@@ -76,6 +104,11 @@ API requests. SDK v1 calls send
 helpers omit that header.
 
 ## API surface
+
+`harn.protocol` is the canonical typed surface. It contains generated model
+classes plus sync and async functions for every Harn v0.10.116 OpenAPI
+operation. `create_harn_protocol_client` applies HTTPS, bearer, public-discovery,
+and protocol-header defaults once.
 
 `HarnClient` and `AsyncHarnClient` expose named helpers for the v1 OpenAPI
 routes tracked in `src/harn/client.py`, including:
@@ -148,6 +181,7 @@ See runnable examples in [`examples/`](examples):
 - `03_fire_trigger.py`: record trigger-like input
 - `04_manage_session.py`: create, inspect, and close a session
 - `05_deploy_pipeline.py`: publish pipeline metadata as artifacts and outcomes
+- `fastapi_provider_catalog.py`: add one generated operation to a FastAPI route
 
 ## Development
 
@@ -156,12 +190,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 python -m pip install build twine
+python scripts/normalize_protocol_artifact.py
+python scripts/check_protocol_artifact.py
 python scripts/check_version_sync.py
-ruff format --check src tests scripts
-ruff check src tests scripts
+ruff format --check src tests scripts examples
+ruff check src tests scripts examples
 pytest -q
 python -m build
 python -m twine check dist/*
+python -m pip install --force-reinstall dist/*.whl
+python scripts/check_built_package.py
 ```
 
 ## Release automation

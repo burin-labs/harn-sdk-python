@@ -10,15 +10,17 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from ._base_url import (
+    DEFAULT_BASE_URL,
+    validate_base_url,
+    warn_for_authenticated_custom_base_url,
+)
 from .auth import CredentialProvider
 from .models import ApiError, ErrorBody, JsonDict, StreamEvent
 from .stream import SSEParser, parse_sse_lines
 
 HARN_PROTOCOL_VERSION = "agents-protocol-2026-04-25"
 HARN_PROTOCOL_HEADER = "Harn-Agents-Protocol-Version"
-
-DEFAULT_BASE_URL = "https://api.harnlang.com"
-_LOCAL_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 _PATH_PARAM_RE = re.compile(r"{([A-Za-z_][A-Za-z0-9_]*)}")
 
@@ -318,27 +320,6 @@ def _endpoint_signature(endpoint: _Endpoint) -> Signature:
     return Signature(parameters, return_annotation=return_annotation)
 
 
-def _validate_base_url(base_url: str) -> tuple[str, str]:
-    """Validate a configured base URL and return ``(normalized_url, host)``.
-
-    F9: rejects schemes other than ``https`` (or ``http`` for localhost) so an
-    accidental ``http://attacker/`` cannot ship bearer tokens in cleartext.
-    """
-    parts = urlsplit(base_url)
-    scheme = parts.scheme.lower()
-    host = (parts.hostname or "").lower()
-    if scheme == "https" or scheme == "http" and host in _LOCAL_HTTP_HOSTS:
-        pass
-    else:
-        raise ValueError(
-            f"HarnClient base_url must use https:// (got {base_url!r}); "
-            "http:// is only allowed for localhost/127.0.0.1"
-        )
-    if not host:
-        raise ValueError(f"HarnClient base_url is missing a host: {base_url!r}")
-    return base_url.rstrip("/"), host
-
-
 def _outgoing_host(base_host: str, base_url: str, path: str) -> str:
     """Compute the eventual outgoing host for ``path`` against ``base_url``.
 
@@ -361,7 +342,7 @@ class _BaseClient:
         timeout: float = 30.0,
         protocol_version: str = HARN_PROTOCOL_VERSION,
     ) -> None:
-        normalized, host = _validate_base_url(base_url)
+        normalized, host = validate_base_url(base_url)
         self.base_url = normalized
         self._base_host = host
         self.timeout = timeout
@@ -372,16 +353,11 @@ class _BaseClient:
         # F1: one-time warning when the caller overrode the default base_url AND
         # configured a token. Bearer credentials issued for api.harnlang.com
         # almost certainly should not travel to a custom host.
-        if (token is not None or credential is not None) and base_url.rstrip(
-            "/"
-        ) != DEFAULT_BASE_URL:
-            warnings.warn(
-                f"HarnClient base_url overridden to {base_url!r} while a "
-                "token/credential is configured. The token will only be sent "
-                "to that exact host; cross-host requests will be unauthenticated.",
-                UserWarning,
-                stacklevel=3,
-            )
+        warn_for_authenticated_custom_base_url(
+            base_url,
+            authenticated=token is not None or credential is not None,
+            stacklevel=3,
+        )
 
     def _auth_headers(
         self,
