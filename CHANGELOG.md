@@ -6,7 +6,22 @@ calendar-aligned alpha versions while pre-1.0.
 
 ## Unreleased
 
+### Added
+
+- Added the Harn v0.10.116 generated Python protocol package with typed models
+  and sync/async functions for all 85 OpenAPI operations.
+- Added `create_harn_protocol_client` for shared HTTPS, bearer, public discovery,
+  and protocol-version defaults.
+- Added a runnable FastAPI provider-catalog route with an executing integration
+  test.
+
 ### Changed
+
+- The generated `harn.protocol` package now owns complete operation coverage
+  and typed request/response I/O. `HarnClient` and `AsyncHarnClient` remain
+  compatibility adapters for their original dictionary-based surface.
+
+### Maintenance
 
 - **Dependency upgrades.** Raised minimum supported versions to the latest
   releases: `httpx>=0.28.0`, `pydantic>=2.13.0`, `pytest>=9.1.0` (was 8.x),

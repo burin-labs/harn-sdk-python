@@ -38,11 +38,14 @@ jobs:
       - name: Check version sync
         run: python scripts/check_version_sync.py
 
+      - name: Check generated protocol
+        run: python scripts/check_protocol_artifact.py
+
       - name: Check formatting
-        run: ruff format --check src tests scripts
+        run: ruff format --check src tests scripts examples
 
       - name: Lint
-        run: ruff check src tests scripts
+        run: ruff check src tests scripts examples
 
       - name: Run tests
         run: pytest -q
@@ -52,6 +55,11 @@ jobs:
 
       - name: Check distributions
         run: python -m twine check dist/*
+
+      - name: Check installed wheel
+        run: |
+          pip install --force-reinstall dist/*.whl
+          python scripts/check_built_package.py
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
