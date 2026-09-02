@@ -4,9 +4,24 @@ Python SDK for the Harn Agents API.
 
 ## Install
 
+`harn-sdk` is not on PyPI yet, so `pip install harn-sdk` does not resolve.
+Install from a checkout or straight from the repository:
+
 ```bash
-pip install harn-sdk
+pip install "harn-sdk @ git+https://github.com/burin-labs/harn-sdk-python@main"
 ```
+
+For SDK development, use an editable install instead:
+
+```bash
+git clone https://github.com/burin-labs/harn-sdk-python.git
+cd harn-sdk-python
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Once the first release publishes, `pip install harn-sdk` becomes the install
+path. [CONTRIBUTING.md](CONTRIBUTING.md) covers the checks and the release flow.
 
 ## Quickstart
 
