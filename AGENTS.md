@@ -78,7 +78,7 @@ Work in an isolated worktree and branch. Rebase on `origin/main` before opening 
   deployment, or packaging differences. Do not rebuild or recapture solely for main.
 - Ship means owning-main integration with terminal merge and applicable release/deploy
   checks. Confirm landed content and result; an open PR is incomplete.
-- Use `ship` with a deployed Smart Ship caller; otherwise use `gh pr merge --squash --auto`.
-  Never use `--admin`; incidents use `bypass-ci`, `bypass-merge-queue`, or `force-merge`.
+- Use `ship` where deployed; otherwise use protected PRs: queue when required, or squash
+  with `--match-head-commit` after required reviews/checks. Never `--admin` or bypass protections.
 
 <!-- END HARN SHARED AGENT CONTRACT -->
