@@ -268,20 +268,6 @@ def _render_endpoint_path(
     return path
 
 
-def _prepare_endpoint_call(
-    endpoint: _Endpoint,
-    path_args: tuple[object, ...],
-    path_kwargs: dict[str, object],
-    body: JsonDict | None,
-) -> tuple[str, bool, bool]:
-    if body is not None and not endpoint.accepts_body:
-        raise TypeError(f"{endpoint.name}() does not accept a body")
-    path = _render_endpoint_path(endpoint, path_args, path_kwargs)
-    auth = not endpoint.public
-    protocol = not endpoint.public
-    return path, auth, protocol
-
-
 def _endpoint_signature(endpoint: _Endpoint) -> Signature:
     parameters = [
         Parameter(name, Parameter.POSITIONAL_OR_KEYWORD, annotation=str)
@@ -389,6 +375,33 @@ class _BaseClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return headers
+
+    def _call_endpoint(
+        self,
+        endpoint: _Endpoint,
+        path_args: tuple[object, ...],
+        path_kwargs: dict[str, object],
+        *,
+        params: dict[str, Any] | None = None,
+        body: JsonDict | None = None,
+        idempotency_key: str | None = None,
+    ) -> Any:
+        if body is not None and not endpoint.accepts_body:
+            raise TypeError(f"{endpoint.name}() does not accept a body")
+        path = _render_endpoint_path(endpoint, path_args, path_kwargs)
+        auth = not endpoint.public
+        protocol = not endpoint.public
+        if endpoint.stream:
+            return self._stream(path, params=params, auth=auth, protocol=protocol)
+        return self._request(
+            endpoint.method,
+            path,
+            params=params,
+            json=body,
+            idempotency_key=idempotency_key,
+            auth=auth,
+            protocol=protocol,
+        )
 
 
 class HarnClient(_BaseClient):
@@ -516,31 +529,6 @@ class HarnClient(_BaseClient):
                 _parse_response(response)
             yield from response.iter_bytes(chunk_size)
 
-    def _call_endpoint(
-        self,
-        endpoint: _Endpoint,
-        path_args: tuple[object, ...],
-        path_kwargs: dict[str, object],
-        *,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        path, auth, protocol = _prepare_endpoint_call(
-            endpoint, path_args, path_kwargs, body
-        )
-        if endpoint.stream:
-            return self._stream(path, params=params, auth=auth, protocol=protocol)
-        return self._request(
-            endpoint.method,
-            path,
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-            auth=auth,
-            protocol=protocol,
-        )
-
 
 class AsyncHarnClient(_BaseClient):
     """Asynchronous Harn Agents API client.
@@ -667,47 +655,6 @@ class AsyncHarnClient(_BaseClient):
             async for chunk in response.aiter_bytes(chunk_size):
                 yield chunk
 
-    async def _call_endpoint(
-        self,
-        endpoint: _Endpoint,
-        path_args: tuple[object, ...],
-        path_kwargs: dict[str, object],
-        *,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> Any:
-        path, auth, protocol = _prepare_endpoint_call(
-            endpoint, path_args, path_kwargs, body
-        )
-        return await self._request(
-            endpoint.method,
-            path,
-            params=params,
-            json=body,
-            idempotency_key=idempotency_key,
-            auth=auth,
-            protocol=protocol,
-        )
-
-    async def _call_stream_endpoint(
-        self,
-        endpoint: _Endpoint,
-        path_args: tuple[object, ...],
-        path_kwargs: dict[str, object],
-        *,
-        params: dict[str, Any] | None = None,
-        body: JsonDict | None = None,
-        idempotency_key: str | None = None,
-    ) -> AsyncIterator[StreamEvent]:
-        path, auth, protocol = _prepare_endpoint_call(
-            endpoint, path_args, path_kwargs, body
-        )
-        async for event in self._stream(
-            path, params=params, auth=auth, protocol=protocol
-        ):
-            yield event
-
 
 def _make_sync_endpoint(endpoint: _Endpoint):
     def endpoint_method(
@@ -745,7 +692,7 @@ def _make_async_endpoint(endpoint: _Endpoint):
             idempotency_key: str | None = None,
             **path_kwargs: object,
         ) -> AsyncIterator[StreamEvent]:
-            async for event in self._call_stream_endpoint(
+            async for event in self._call_endpoint(
                 endpoint,
                 path_args,
                 path_kwargs,

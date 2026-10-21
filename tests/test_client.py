@@ -1,3 +1,5 @@
+from contextlib import AsyncExitStack
+from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
 from urllib.parse import quote
 
 import httpx
@@ -103,9 +105,15 @@ def test_client_surface_matches_latest_harn_openapi() -> None:
 
     assert not hasattr(HarnClient, "suspend_task")
     assert not hasattr(HarnClient, "list_context_packs")
+    assert iscoroutinefunction(AsyncHarnClient.list_events)
+    assert isasyncgenfunction(AsyncHarnClient.stream_events)
 
 
-def test_all_generated_endpoint_helpers_dispatch_expected_routes() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_all_generated_endpoint_helpers_dispatch_expected_routes(
+    asynchronous: bool,
+) -> None:
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -115,6 +123,8 @@ def test_all_generated_endpoint_helpers_dispatch_expected_routes() -> None:
                 "path": request.url.raw_path.decode(),
                 "has_auth": "authorization" in request.headers,
                 "has_protocol": "harn-agents-protocol-version" in request.headers,
+                "body": request.content,
+                "idempotency": request.headers.get("idempotency-key"),
             }
         )
         if request.url.path.endswith("/stream"):
@@ -128,16 +138,44 @@ def test_all_generated_endpoint_helpers_dispatch_expected_routes() -> None:
         return httpx.Response(200, json={"ok": True})
 
     transport = httpx.MockTransport(handler)
-    with HarnClient(
-        client=httpx.Client(transport=transport, base_url="https://api.harnlang.com"),
+    client_type = AsyncHarnClient if asynchronous else HarnClient
+    http_client_type = httpx.AsyncClient if asynchronous else httpx.Client
+    client = client_type(
+        client=http_client_type(
+            transport=transport, base_url="https://api.harnlang.com"
+        ),
         token="token-123",
-    ) as client:
+    )
+    async with AsyncExitStack() as stack:
+        if asynchronous:
+            await stack.enter_async_context(client)
+        else:
+            stack.enter_context(client)
         for endpoint in _OPENAPI_ENDPOINTS:
             args = [f"{name}/value" for name in endpoint.path_params]
             kwargs = {"body": {"ok": True}} if endpoint.accepts_body else {}
-            result = getattr(client, endpoint.name)(*args, **kwargs)
+            result = getattr(client, endpoint.name)(
+                *args, idempotency_key="idem-1", **kwargs
+            )
+            if isawaitable(result):
+                result = await result
             if endpoint.stream:
-                assert [event.data for event in result] == [{"ok": True}]
+                data = (
+                    [event.data async for event in result]
+                    if asynchronous
+                    else [event.data for event in result]
+                )
+                assert data == [{"ok": True}]
+            else:
+                expected_result = None if endpoint.method == "DELETE" else {"ok": True}
+                assert result == expected_result
+        for name in ("get_session", "stream_session_events"):
+            with pytest.raises(TypeError, match="does not accept a body"):
+                result = getattr(client, name)("sess_1", body={"invalid": True})
+                if isawaitable(result):
+                    await result
+                else:
+                    await anext(result)
 
     expected = []
     for endpoint in _OPENAPI_ENDPOINTS:
@@ -150,6 +188,8 @@ def test_all_generated_endpoint_helpers_dispatch_expected_routes() -> None:
                 "path": path,
                 "has_auth": not endpoint.public,
                 "has_protocol": not endpoint.public,
+                "body": b'{"ok":true}' if endpoint.accepts_body else b"",
+                "idempotency": None if endpoint.stream else "idem-1",
             }
         )
     assert seen == expected
