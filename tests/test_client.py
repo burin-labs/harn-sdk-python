@@ -1,3 +1,4 @@
+import json
 from contextlib import AsyncExitStack
 from inspect import isasyncgenfunction, isawaitable, iscoroutinefunction
 from urllib.parse import quote
@@ -94,6 +95,93 @@ EXPECTED_ENDPOINTS = (
     ("list_quotas", "GET", "/v1/quotas"),
     ("get_quota", "GET", "/v1/quotas/{quota_id}"),
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_assistant_resource_and_execution_error_preserve_transport(
+    asynchronous: bool,
+) -> None:
+    message = {
+        "role": "assistant",
+        "parts": [
+            {
+                "type": "text",
+                "text": "[Caller-supplied report]\n",
+                "visibility": "public",
+            },
+            {
+                "type": "text",
+                "text": "  4 passed — reported, not run here.\n",
+                "visibility": "public",
+            },
+        ],
+        "metadata": {
+            "assistant_origin": {
+                "kind": "caller_supplied",
+                "source": "imported test report",
+            },
+            "opaque": {"ordered": [2, 1], "unrecognized": True},
+        },
+    }
+    resource = {
+        "id": "msg_1",
+        "object": "message",
+        **message,
+        "server_extension": [3, 2, 1],
+    }
+    # Simulated server refusal: this is a transport contract, not actor adoption.
+    error_body = {
+        "error": {
+            "code": "unsupported_execution_input_role",
+            "message": "runtime execution requires user-role input",
+            "type": "invalid_request_error",
+            "param": "input.role",
+            "details": {"role": "assistant"},
+        }
+    }
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.method, request.url.raw_path.decode(), json.loads(request.content))
+        )
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json=resource)
+        return httpx.Response(400, json=error_body)
+
+    client_type = AsyncHarnClient if asynchronous else HarnClient
+    http_client_type = httpx.AsyncClient if asynchronous else httpx.Client
+    client = client_type(
+        client=http_client_type(
+            transport=httpx.MockTransport(handler), base_url="https://api.harnlang.com"
+        )
+    )
+    resource_body = {"message": message, "run": False}
+    execution_body = {"input": message}
+    async with AsyncExitStack() as stack:
+        if asynchronous:
+            await stack.enter_async_context(client)
+        else:
+            stack.enter_context(client)
+        result = client.append_session_message("session/1", body=resource_body)
+        if isawaitable(result):
+            result = await result
+        assert result == resource
+        with pytest.raises(ApiError) as caught:
+            result = client.submit_session_task("session/1", body=execution_body)
+            if isawaitable(result):
+                await result
+        assert caught.value.status_code == 400
+        assert caught.value.body == error_body
+        assert caught.value.error is not None
+        assert caught.value.error.code == error_body["error"]["code"]
+
+    # Exactly one request per call: no fallback resubmission or role conversion.
+    assert seen == [
+        ("POST", "/v1/sessions/session%2F1/messages", resource_body),
+        ("POST", "/v1/sessions/session%2F1/tasks", execution_body),
+    ]
 
 
 def test_client_surface_matches_latest_harn_openapi() -> None:

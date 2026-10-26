@@ -40,6 +40,45 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
         print(event.event, event.data)
 ```
 
+## Store caller-supplied assistant messages
+
+Use the existing message resource endpoint to archive caller-supplied text:
+
+```python
+with HarnClient(base_url="http://localhost:8080", token="...") as client:
+    message = client.append_session_message(
+        "session_123",
+        body={
+            "run": False,
+            "message": {
+                "role": "assistant",
+                "parts": [{
+                    "type": "text",
+                    "visibility": "public",
+                    "text": "[Caller-supplied report]\n4 tests passed, according to an imported report.",
+                }],
+                "metadata": {
+                    "assistant_origin": {
+                        "kind": "caller_supplied", "source": "imported test report"
+                    }
+                },
+            },
+        },
+    )
+```
+
+`AsyncHarnClient` accepts the same body with `await`. Both clients preserve the
+role, part order, and open metadata. The source label is a caller assertion; it
+does not prove test execution, model authorship, or authorization.
+
+Storing a message resource does not adopt it into the runtime actor's model
+history, start a task, or establish assistant prefill support. The standalone
+API's message resources are process-local; do not rely on them surviving a
+restart. Runtime history import and provider continuation need their own
+supported interfaces. Use user-role task input as in the quickstart to request
+execution. Servers can reject assistant-role execution or steering; the SDK
+returns that error without rewriting the role or retrying as user input.
+
 ## Add Harn to an existing app
 
 The generated Harn v0.10.116 client exposes all 85 protocol operations with
