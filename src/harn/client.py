@@ -15,7 +15,7 @@ from ._base_url import (
     validate_base_url,
     warn_for_authenticated_custom_base_url,
 )
-from ._mcp_protocol import McpHeaders
+from ._mcp_protocol import McpHeaders, McpResponseStream
 from ._wire_json import loads as load_wire_json
 from .auth import CredentialProvider
 from .models import ApiError, ErrorBody, JsonDict, StreamEvent
@@ -468,6 +468,26 @@ class HarnClient(_BaseClient):
             headers.update(mcp_headers.fields())
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if mcp_headers is not None:
+            with self._client.stream(
+                method, path, params=params, json=json, headers=headers
+            ) as response:
+                if (
+                    response.is_error
+                    or response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                    != "text/event-stream"
+                ):
+                    response.read()
+                    return _parse_response(response, mcp=True)
+                parser = McpResponseStream()
+                for line in response.iter_lines():
+                    message = parser.push(line)
+                    if message is not None:
+                        return message
+                parser.finish()
         response = self._client.request(
             method, path, params=params, json=json, headers=headers
         )
@@ -590,6 +610,26 @@ class AsyncHarnClient(_BaseClient):
             headers.update(mcp_headers.fields())
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if mcp_headers is not None:
+            async with self._client.stream(
+                method, path, params=params, json=json, headers=headers
+            ) as response:
+                if (
+                    response.is_error
+                    or response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                    != "text/event-stream"
+                ):
+                    await response.aread()
+                    return _parse_response(response, mcp=True)
+                parser = McpResponseStream()
+                async for line in response.aiter_lines():
+                    message = parser.push(line)
+                    if message is not None:
+                        return message
+                parser.finish()
         response = await self._client.request(
             method, path, params=params, json=json, headers=headers
         )

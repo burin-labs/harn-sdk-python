@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Literal
+from typing import Literal, NoReturn
 
 from mcp.shared.inbound import encode_header_value
 from pydantic import MISSING, JsonValue
 
 from ._codegen import protocol as facts
+from ._wire_json import loads
 from .bindings import BindingError, WireModel
+from .stream import SSEParser
 
 
 @dataclass(frozen=True)
@@ -30,13 +32,46 @@ class McpHeaders:
 
     def fields(self) -> dict[str, str]:
         headers = {
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             facts.MCP_HEADER_METHOD: self.method,
             facts.MCP_HEADER_PROTOCOL_VERSION: facts.MCP_PROTOCOL_VERSION,
         }
         if self.subject is not None:
             headers[facts.MCP_HEADER_NAME] = encode_header_value(self.subject)
         return headers
+
+
+class McpResponseStream:
+    """Frame raw SSE data; the existing RPC boundary validates the response."""
+
+    def __init__(self) -> None:
+        self.parser = SSEParser(parse_json=False)
+
+    def push(self, line: str) -> dict[str, JsonValue] | None:
+        event = self.parser.push(line)
+        if event is None or event.data is None or event.data == "":
+            return None
+        if not isinstance(event.data, str):
+            raise BindingError("mcp_response_malformed")
+        message = loads(event.data)
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+            raise BindingError("mcp_response_malformed")
+        if (
+            "id" not in message
+            and isinstance(message.get("method"), str)
+            and bool(message["method"])
+            and "result" not in message
+            and "error" not in message
+            and ("params" not in message or isinstance(message["params"], dict))
+        ):
+            return None
+        if "id" not in message:
+            raise BindingError("mcp_response_malformed")
+        return message
+
+    def finish(self) -> NoReturn:
+        # An unterminated SSE event is not a dispatched response.
+        raise BindingError("mcp_response_missing_result")
 
 
 def request_params(params: dict[str, JsonValue]) -> dict[str, JsonValue]:

@@ -57,6 +57,8 @@ from an explicit nullable value.
 Direct results and server-selected tasks use the same typed method. A declared
 application failure returns `ApplicationFailure[DeclaredError]`; transport,
 protocol, and runtime faults raise SDK errors. Cancel an async call normally.
+The HTTP client accepts JSON and event-stream responses, reads the first RPC
+response, and closes that response stream before collecting a separate task.
 The client closes a direct HTTP exchange or requests cancellation of a known
 Harn task. Task cancellation acknowledgment does not prove handler cleanup.
 

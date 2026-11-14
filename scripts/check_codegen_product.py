@@ -20,11 +20,13 @@ import threading
 from importlib.metadata import version
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
 import harn
 from harn import AsyncHarnClient, HarnClient
+from harn._codegen import protocol as facts
 from harn._codegen.diagnostic import CodegenDiagnostic
 from harn._wire_json import loads
 from harn.bindings import ApplicationFailure
@@ -165,7 +167,27 @@ def main() -> int:
     try:
         base_url = ready.get(timeout=30)
         adapter = TypeAdapter(module.Payload)
-        with HarnClient(base_url=base_url) as transport:
+        response_media = []
+
+        def observe_response(response):
+            assert "authorization" not in response.request.headers
+            assert set(response.request.headers["accept"].split(", ")) == {
+                "application/json",
+                "text/event-stream",
+            }
+            response_media.append(
+                (
+                    response.request.headers[facts.MCP_HEADER_METHOD],
+                    response.headers["content-type"].split(";", 1)[0],
+                )
+            )
+
+        with (
+            httpx.Client(
+                base_url=base_url, event_hooks={"response": [observe_response]}
+            ) as http,
+            HarnClient(base_url=base_url, client=http) as transport,
+        ):
             client = module.Client(transport)
             assert (
                 loads(
@@ -190,7 +212,15 @@ def main() -> int:
             )
 
         async def asynchronous():
-            async with AsyncHarnClient(base_url=base_url) as transport:
+            async def observe(response):
+                observe_response(response)
+
+            async with (
+                httpx.AsyncClient(
+                    base_url=base_url, event_hooks={"response": [observe]}
+                ) as http,
+                AsyncHarnClient(base_url=base_url, client=http) as transport,
+            ):
                 client = module.AsyncClient(transport)
                 assert (
                     loads(
@@ -219,6 +249,10 @@ def main() -> int:
                 )
 
         asyncio.run(asynchronous())
+        assert {media for _, media in response_media} == {
+            "application/json",
+            "text/event-stream",
+        }
         sys.path.insert(0, str(ROOT))
         from examples.fastapi_generated import create_app
 
@@ -259,6 +293,7 @@ def main() -> int:
             "drift_refused_and_preserved": True,
             "sync_echo_reject_task": True,
             "async_echo_reject_task": True,
+            "http_responses_observed": response_media,
             "fastapi_reached": reached,
             "malformed_input_refused": True,
             "input_refusals": ["missing_payload_fields", "integer_negative_zero"],
