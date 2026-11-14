@@ -15,6 +15,8 @@ from ._base_url import (
     validate_base_url,
     warn_for_authenticated_custom_base_url,
 )
+from ._mcp_protocol import McpHeaders
+from ._wire_json import loads as load_wire_json
 from .auth import CredentialProvider
 from .models import ApiError, ErrorBody, JsonDict, StreamEvent
 from .stream import SSEParser, parse_sse_lines
@@ -202,7 +204,7 @@ def _path_segment(value: str) -> str:
     return quote(value, safe="")
 
 
-def _parse_response(response: httpx.Response) -> Any:
+def _parse_response(response: httpx.Response, *, mcp: bool = False) -> Any:
     if response.is_error:
         error = None
         body: Any
@@ -221,6 +223,8 @@ def _parse_response(response: httpx.Response) -> Any:
     if response.status_code == 204:
         return None
     if response.headers.get("content-type", "").lower().startswith("application/json"):
+        if mcp:
+            return load_wire_json(response.content)
         return response.json()
     return response.content
 
@@ -457,14 +461,17 @@ class HarnClient(_BaseClient):
         idempotency_key: str | None = None,
         auth: bool = True,
         protocol: bool = True,
+        mcp_headers: McpHeaders | None = None,
     ) -> Any:
         headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
+        if mcp_headers is not None:
+            headers.update(mcp_headers.fields())
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = self._client.request(
             method, path, params=params, json=json, headers=headers
         )
-        return _parse_response(response)
+        return _parse_response(response, mcp=mcp_headers is not None)
 
     def request(
         self,
@@ -576,14 +583,17 @@ class AsyncHarnClient(_BaseClient):
         idempotency_key: str | None = None,
         auth: bool = True,
         protocol: bool = True,
+        mcp_headers: McpHeaders | None = None,
     ) -> Any:
         headers = self._auth_headers(path=path, auth=auth, protocol=protocol)
+        if mcp_headers is not None:
+            headers.update(mcp_headers.fields())
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         response = await self._client.request(
             method, path, params=params, json=json, headers=headers
         )
-        return _parse_response(response)
+        return _parse_response(response, mcp=mcp_headers is not None)
 
     async def request(
         self,

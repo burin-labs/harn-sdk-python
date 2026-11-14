@@ -41,6 +41,12 @@ jobs:
       - name: Check generated protocol
         run: python scripts/check_protocol_artifact.py
 
+      - name: Check generated codegen contract
+        run: python scripts/generate_codegen_contract.py --check
+
+      - name: Check generated codegen example
+        run: python scripts/generate_codegen_example.py --check
+
       - name: Check formatting
         run: ruff format --check src tests scripts examples
 

@@ -7,19 +7,24 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Burin Labs" }]
 dependencies = [
+  "anyio>=4.9.0,<5.0.0",
   "attrs>=23.1.0,<27.0.0",
   "httpx>=0.28.0,<1.0.0",
-  "pydantic>=2.13.0,<3.0.0",
+  "mcp==2.3.0",
+  "pydantic>=2.14.0,<3.0.0",
   "python-dateutil>=2.8.2,<5.0.0",
   "typing-extensions>=4.12.0,<5.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "datamodel-code-generator==0.96.0",
   "fastapi>=0.141.1,<1.0.0",
+  "jsonschema>=4.26.0,<5.0.0",
   "pyyaml>=6.0.3,<7.0.0",
   "pytest>=9.1.0,<10.0.0",
   "pytest-asyncio>=1.4.0,<2.0.0",
+  "pyright==1.1.414",
   "ruff>=0.15.0,<1.0.0",
   "uvicorn>=0.52.4,<1.0.0",
 ]
@@ -27,6 +32,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/burin-labs/harn-sdk-python"
 Issues = "https://github.com/burin-labs/harn-sdk-python/issues"
+
+[project.scripts]
+harn-codegen-python = "harn.codegen:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -38,6 +46,7 @@ packages = ["src/harn"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 extend-exclude = ["src/harn/protocol"]
