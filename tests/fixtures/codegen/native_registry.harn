@@ -1,0 +1,14 @@
+import {NativeMcpProcessSpec, native_tool_registry} from "std/tools"
+
+type NativeFixture = {ir: string, process: NativeMcpProcessSpec}
+
+fn main(harness: Harness) {
+  const encoded = harness.env.get("HARN_EXT_NATIVE_FIXTURE")
+  if encoded == nil {
+    throw "Native fixture configuration is missing"
+  }
+  const config = json_decode(encoded, schema_of(NativeFixture))?
+  const ir = json_parse(harness.fs.read_text(config.ir))
+  const registry = native_tool_registry(harness.tools, config.process, ir, 2)
+  harness.tools.mcp_tools(registry)
+}

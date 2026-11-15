@@ -32,7 +32,9 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
     session = client.create_session(body={"workspace_id": "wrk_123"})
     task = client.submit_session_task(
         session["id"],
-        body={"input": {"role": "user", "parts": [{"type": "text", "text": "Ship it."}]}},
+        body={
+            "input": {"role": "user", "parts": [{"type": "text", "text": "Ship it."}]}
+        },
         idempotency_key="task-001",
     )
 
@@ -52,14 +54,17 @@ with HarnClient(base_url="http://localhost:8080", token="...") as client:
             "run": False,
             "message": {
                 "role": "assistant",
-                "parts": [{
-                    "type": "text",
-                    "visibility": "public",
-                    "text": "[Caller-supplied report]\n4 tests passed, according to an imported report.",
-                }],
+                "parts": [
+                    {
+                        "type": "text",
+                        "visibility": "public",
+                        "text": "[Caller-supplied report]\n4 tests passed, according to an imported report.",
+                    }
+                ],
                 "metadata": {
                     "assistant_origin": {
-                        "kind": "caller_supplied", "source": "imported test report"
+                        "kind": "caller_supplied",
+                        "source": "imported test report",
                     }
                 },
             },
@@ -96,6 +101,7 @@ harn = create_harn_protocol_client(
     base_url=os.getenv("HARN_BASE_URL", "https://api.harnlang.com"),
     token=os.getenv("HARN_ACCESS_TOKEN"),
 )
+
 
 @app.get("/models")
 def models() -> dict[str, object]:
@@ -201,17 +207,16 @@ with HarnClient(token="...") as client, open("video.mp4", "wb") as out:
 `download_artifact_content` is preserved for backwards compatibility but emits
 a `DeprecationWarning` and loads the whole response into memory.
 
-## Tool helper
+## Typed tool adapters
 
-```python
-from harn import tool, registry
+`harn-codegen-python` generates strict Pydantic models, sync and async MCP
+clients, and exact native handler registries from Harn's closed codegen IR.
+Harn compiles and validates the source contract, checks its digests, and owns
+deterministic artifact publication. Python consumes that normalized graph.
 
-@tool(name="sum", description="Add two ints")
-def sum_tool(a: int, b: int) -> int:
-    return a + b
-
-print([t.name for t in registry.list()])
-```
+See [Generate typed adapters](docs/CODEGEN.md) for generation, native handlers,
+and the executing FastAPI example. The schema-free `tool` decorator and global
+`registry` have been removed; generate a contract-specific registry instead.
 
 ## Clients
 

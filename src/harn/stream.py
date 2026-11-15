@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 
-from .models import StreamEvent
+from .models import JsonDict, StreamEvent
 
 
 class SSEParser:
-    def __init__(self) -> None:
+    def __init__(self, *, parse_json: bool = True) -> None:
+        self.parse_json = parse_json
         self.current_id: str | None = None
         self.current_event: str | None = None
         self.current_retry: int | None = None
@@ -21,8 +22,8 @@ class SSEParser:
         ):
             return None
         raw_data = "\n".join(self.data_parts) if self.data_parts else None
-        parsed_data: object = raw_data
-        if raw_data:
+        parsed_data: JsonDict | str | None = raw_data
+        if raw_data and self.parse_json:
             try:
                 parsed_data = json.loads(raw_data)
             except json.JSONDecodeError:

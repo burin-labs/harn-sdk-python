@@ -8,6 +8,12 @@ calendar-aligned alpha versions while pre-1.0.
 
 ### Added
 
+- Added `harn-codegen-python` with strict Pydantic wire types, source mappings,
+  sync and async MCP clients, and exact instance-owned native handler registries.
+- MCP clients accept JSON and event streams and observe a task response before
+  the stream ends, so cancellation can target the known task.
+- Added generated FastAPI and native stdio examples from Harn's shared recursive
+  fixture, including full-width integers, bytes, decimals, sets, and typed errors.
 - Added the Harn v0.10.116 generated Python protocol package with typed models
   and sync/async functions for all 85 OpenAPI operations.
 - Added `create_harn_protocol_client` for shared HTTPS, bearer, public discovery,
@@ -17,6 +23,8 @@ calendar-aligned alpha versions while pre-1.0.
 
 ### Changed
 
+- Removed the schema-free global `registry` and `tool` decorator. Native handlers
+  now register against the generated operation identities and input/output types.
 - The generated `harn.protocol` package now owns complete operation coverage
   and typed request/response I/O. `HarnClient` and `AsyncHarnClient` remain
   compatibility adapters for their original dictionary-based surface.
