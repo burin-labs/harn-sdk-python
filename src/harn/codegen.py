@@ -202,7 +202,11 @@ def main() -> int:
         command.extend(("--ir", str(args.ir)))
     for selection in args.select:
         command.extend(("--select", selection))
-    for root in args.plugin_read_root:
+    roots = dict.fromkeys(
+        Path(root).resolve()
+        for root in (sys.prefix, sys.base_prefix, *args.plugin_read_root)
+    )
+    for root in roots:
         command.extend(("--plugin-read-root", str(root)))
     if args.check:
         command.append("--check")

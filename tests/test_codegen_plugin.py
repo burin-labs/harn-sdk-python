@@ -113,3 +113,54 @@ def test_a_known_but_unimplemented_feature_refuses_instead_of_claiming_support(
         CodegenDiagnostic.model_validate_json(captured.err).code.value
         == "unsupported_feature"
     )
+
+
+def test_launcher_declares_distinct_interpreter_and_package_installations(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from harn import codegen
+
+    installation = tmp_path / "venv"
+    interpreter = tmp_path / "managed-python"
+    dependency = tmp_path / "extra-dependency"
+    for root in (installation, interpreter, dependency):
+        root.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(installation))
+    monkeypatch.setattr(sys, "base_prefix", str(interpreter))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "harn-codegen-python",
+            "--file",
+            "contract.harn",
+            "--out",
+            "generated",
+            "--plugin-read-root",
+            str(installation),
+            "--plugin-read-root",
+            str(dependency),
+        ],
+    )
+    monkeypatch.setattr(codegen.shutil, "which", lambda program, **_: str(program))
+    calls = []
+
+    def run(command, **options):
+        calls.append(command)
+        assert options == {"check": False}
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(codegen.subprocess, "run", run)
+    assert codegen.main() == 0
+    assert len(calls) == 1
+    roots = [
+        calls[0][index + 1]
+        for index, argument in enumerate(calls[0])
+        if argument == "--plugin-read-root"
+    ]
+    assert roots == [
+        str(root.resolve()) for root in (installation, interpreter, dependency)
+    ]
+    assert str(tmp_path) not in roots

@@ -11,12 +11,13 @@ harn-codegen-python \
   --file path/to/server.harn \
   --surface exports \
   --role both \
-  --plugin-read-root "$VIRTUAL_ENV" \
   --out generated
 ```
 
-The installation root grants the backend read access to its installed Python
-dependencies. Keep source files and credentials outside that root. Harn denies
+The launcher declares read access to its Python interpreter and SDK installation
+roots. This also supports virtual environments backed by a separate managed
+interpreter. Use `--plugin-read-root` for additional dependency installations.
+Keep source files and credentials outside those roots. Harn denies
 the backend access to contract source files and owns compilation, digest
 validation, two-invocation determinism checks, and atomic artifact publication.
 Pass `--ir contract.json` to require all three digests to match a frozen IR.
@@ -114,3 +115,18 @@ uvicorn.run(create_app("http://127.0.0.1:8080"), host="127.0.0.1", port=3000)
 Send `{"input": <shared payload>}` to any route. The example validates raw request
 bytes before dispatch and returns the exact wire representation. Invalid input
 returns HTTP 422 before calling Harn.
+
+## Verify the installed wheel
+
+CI installs the released runtime pinned in [`.harn-version`](../.harn-version)
+after installing the built SDK wheel. To run its product check locally, install
+the wheel into a virtual environment and run:
+
+```bash
+python scripts/check_codegen_product.py --harn "$(command -v harn)" --receipt codegen-product.json
+```
+
+The check refuses an SDK imported from the source tree or a missing runtime.
+It exercises generation, sync and async HTTP calls, tasks, FastAPI routes and
+native handlers. The retained receipt records the runtime identity and terminal
+result, including the known worker cleanup checks.

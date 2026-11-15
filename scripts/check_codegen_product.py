@@ -46,6 +46,15 @@ def main() -> int:
     backend = shutil.which("harn-codegen-python", path=sysconfig.get_path("scripts"))
     assert executable is not None and backend is not None
     assert not Path(harn.__file__).resolve().is_relative_to(ROOT / "src")
+    runtime_version = json.loads(
+        subprocess.run(
+            [executable, "version", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    )
     scratch = Path(tempfile.mkdtemp(prefix="harn-python-product-"))
     fixture = scratch / "source"
     shutil.copytree(ROOT / "tests/fixtures/codegen/pathological", fixture)
@@ -281,6 +290,7 @@ def main() -> int:
                 == 422
             )
         receipt = {
+            "runtime_version": runtime_version,
             "runtime_sha256": hashlib.sha256(Path(executable).read_bytes()).hexdigest(),
             "scratch": str(scratch),
             "installed_sdk": harn.__file__,
