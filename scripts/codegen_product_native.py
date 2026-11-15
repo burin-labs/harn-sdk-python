@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import math
 import os
 import queue
 import re
@@ -14,6 +15,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -40,9 +42,22 @@ def _reaped(identity):
             descriptor = None
         if descriptor is not None:
             try:
+                current = _current(identity["pid"])
+                if current is None or current[19] != identity["start"]:
+                    return
                 poll = select.poll()
+                deadline = time.monotonic() + 30
                 poll.register(descriptor, select.POLLIN)
-                assert poll.poll(30000), ("Recorded worker is still live", identity)
+                events = poll.poll(30000)
+                current = _current(identity["pid"])
+                if current is None or current[19] != identity["start"]:
+                    return
+                if any(flags & select.POLLIN for _, flags in events):
+                    remaining = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+                    poll.modify(descriptor, select.POLLHUP)
+                    # Older kernels lack HUP; the final birth-identity read
+                    # still decides whether reaping actually completed.
+                    poll.poll(remaining)
             finally:
                 os.close(descriptor)
     current = _current(identity["pid"])
